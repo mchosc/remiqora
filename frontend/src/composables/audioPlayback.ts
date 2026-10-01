@@ -88,14 +88,14 @@ export function getSharedAudioCtx(): AudioContext {
   return sharedAudioCtx
 }
 
-let currentlyPlaying: HTMLAudioElement | null = null
+let currentlyPlaying: HTMLMediaElement | null = null
 
-/** Pauses whichever other <audio> element was playing, then claims the "currently playing" slot for this one. */
-export function claimPlayback(audio: HTMLAudioElement): void {
+/** One active audio/video player; comparison previews must not overlap. */
+export function claimPlayback(audio: HTMLMediaElement): void {
   if (currentlyPlaying && currentlyPlaying !== audio) currentlyPlaying.pause()
   currentlyPlaying = audio
 }
 
-export function releasePlaybackIfCurrent(audio: HTMLAudioElement): void {
+export function releasePlaybackIfCurrent(audio: HTMLMediaElement): void {
   if (currentlyPlaying === audio) currentlyPlaying = null
 }

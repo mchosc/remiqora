@@ -1,12 +1,20 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import * as api from '../api/aceStepTraining'
 import { i18n } from '../i18n'
+import { createPollingLoop, type PollContext, type PollingLoop } from '../composables/polling'
 
 const t = i18n.global.t
 
 const AUTOLABEL_POLL_MS = 2000
 const PREPROCESS_POLL_MS = 2000
 const TRAINING_POLL_MS = 3000
+interface LoraLoops { autoLabel?: PollingLoop; preprocess?: PollingLoop; training?: PollingLoop }
+const pollLoops = new WeakMap<object, LoraLoops>()
+function loopsFor(owner: object): LoraLoops {
+  let loops = pollLoops.get(owner)
+  if (!loops) { loops = {}; pollLoops.set(owner, loops) }
+  return loops
+}
 
 export const useLoraTrainingStore = defineStore('loraTraining', {
   state: () => ({
@@ -25,7 +33,6 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
     autoLabelProgressMsg: '',
     autoLabelLastSample: null as api.DatasetSample | null,
     autoLabelError: '',
-    _autoLabelTimer: null as ReturnType<typeof setTimeout> | null,
 
     // Preprocess
     preprocessStarting: false,
@@ -35,26 +42,25 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
     preprocessTotal: 0,
     preprocessOutputDir: '',
     preprocessError: '',
-    _preprocessTimer: null as ReturnType<typeof setTimeout> | null,
 
     // Training
     trainingStarting: false,
     training: null as api.TrainingStatus | null,
     trainingError: '',
-    _trainingTimer: null as ReturnType<typeof setTimeout> | null,
 
     // Export
     exporting: false,
     exportError: '',
     lastExportedPath: '',
+    _backgroundGeneration: 0,
   }),
   getters: {
     isTraining(state): boolean {
       return state.training?.is_training ?? false
     },
     totalEpochs(state): number {
-      const cfg = state.training?.config as { train_epochs?: number } | undefined
-      return cfg?.train_epochs ?? 0
+      const epochs = state.training?.config.epochs ?? state.training?.config.train_epochs
+      return typeof epochs === 'number' && Number.isFinite(epochs) ? epochs : 0
     },
   },
   actions: {
@@ -98,6 +104,7 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
     },
 
     async startAutoLabel(req: api.AutoLabelRequest) {
+      const generation = this._backgroundGeneration
       this.autoLabelError = ''
       this.autoLabelLastSample = null
       this.autoLabelStarting = true
@@ -111,7 +118,7 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
         this.autoLabelRunning = true
         this.autoLabelCurrent = 0
         this.autoLabelTotal = res.total
-        this._pollAutoLabel()
+        if (generation === this._backgroundGeneration) this._pollAutoLabel()
       } catch (err) {
         this.autoLabelError = err instanceof Error ? err.message : String(err)
       } finally {
@@ -119,9 +126,13 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
       }
     },
     _pollAutoLabel() {
-      const tick = async () => {
+      const loops = loopsFor(this)
+      loops.autoLabel?.stop()
+      const taskId = this.autoLabelTaskId
+      const loop = createPollingLoop(async (context) => {
         try {
-          const st = await api.autoLabelStatus(this.autoLabelTaskId)
+          const st = await api.autoLabelStatus(taskId, context.signal)
+          if (!context.isCurrent() || this.autoLabelTaskId !== taskId) return false
           this.autoLabelCurrent = st.current
           this.autoLabelTotal = st.total
           this.autoLabelProgressMsg = st.progress
@@ -129,24 +140,27 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
           if (st.status === 'completed') {
             this.autoLabelRunning = false
             if (st.result) this.samples = st.result.samples
-            return
+            return false
           }
           if (st.status === 'failed') {
             this.autoLabelRunning = false
             this.autoLabelError = st.error || t('storeErrors.labelingFailed')
-            return
+            return false
           }
         } catch (err) {
+          if (!context.isCurrent()) return false
           this.autoLabelRunning = false
           this.autoLabelError = err instanceof Error ? err.message : String(err)
-          return
+          return false
         }
-        this._autoLabelTimer = setTimeout(tick, AUTOLABEL_POLL_MS)
-      }
-      void tick()
+        return true
+      }, AUTOLABEL_POLL_MS)
+      loops.autoLabel = loop
+      loop.start()
     },
 
     async startPreprocess(req: api.PreprocessRequest) {
+      const generation = this._backgroundGeneration
       this.preprocessError = ''
       this.preprocessStarting = true
       try {
@@ -159,7 +173,7 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
         this.preprocessRunning = true
         this.preprocessCurrent = 0
         this.preprocessTotal = res.total
-        this._pollPreprocess(req.output_dir)
+        if (generation === this._backgroundGeneration) this._pollPreprocess(req.output_dir)
       } catch (err) {
         this.preprocessError = err instanceof Error ? err.message : String(err)
       } finally {
@@ -167,9 +181,13 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
       }
     },
     _pollPreprocess(outputDir: string) {
-      const tick = async () => {
+      const loops = loopsFor(this)
+      loops.preprocess?.stop()
+      const taskId = this.preprocessTaskId
+      const loop = createPollingLoop(async (context) => {
         try {
-          const st = await api.preprocessStatus(this.preprocessTaskId)
+          const st = await api.preprocessStatus(taskId, context.signal)
+          if (!context.isCurrent() || this.preprocessTaskId !== taskId) return false
           this.preprocessCurrent = st.current
           this.preprocessTotal = st.total
           if (st.status === 'completed') {
@@ -178,33 +196,36 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
             const message = st.result?.message || st.progress
             if (produced === 0) {
               this.preprocessError = message || t('storeErrors.preprocessFailed')
-              return
+              return false
             }
             this.preprocessOutputDir = st.result?.output_dir || outputDir
             if (message && /failed/i.test(message)) this.preprocessError = message
-            return
+            return false
           }
           if (st.status === 'failed') {
             this.preprocessRunning = false
             this.preprocessError = st.error || t('storeErrors.preprocessFailed')
-            return
+            return false
           }
         } catch (err) {
+          if (!context.isCurrent()) return false
           this.preprocessRunning = false
           this.preprocessError = err instanceof Error ? err.message : String(err)
-          return
+          return false
         }
-        this._preprocessTimer = setTimeout(tick, PREPROCESS_POLL_MS)
-      }
-      void tick()
+        return true
+      }, PREPROCESS_POLL_MS)
+      loops.preprocess = loop
+      loop.start()
     },
 
     async startTraining(req: api.StartLoraTrainingRequest) {
+      const generation = this._backgroundGeneration
       this.trainingError = ''
       this.trainingStarting = true
       try {
         await api.startLoraTraining(req)
-        this._ensureTrainingPoll()
+        if (generation === this._backgroundGeneration) this._ensureTrainingPoll()
         await this.refreshTrainingStatus()
       } catch (err) {
         this.trainingError = err instanceof Error ? err.message : String(err)
@@ -219,9 +240,11 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
         this.trainingError = err instanceof Error ? err.message : String(err)
       }
     },
-    async refreshTrainingStatus() {
+    async refreshTrainingStatus(context?: PollContext) {
       try {
-        this.training = await api.trainingStatus()
+        const training = await api.trainingStatus(context?.signal)
+        if (context && !context.isCurrent()) return
+        this.training = training
         if (this.training.error) this.trainingError = this.training.error
         else if (typeof this.training.status === 'string' && this.training.status.startsWith('❌')) {
           this.trainingError = this.training.status
@@ -231,14 +254,12 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
       }
     },
     _ensureTrainingPoll() {
-      if (this._trainingTimer) return
-      const tick = async () => {
-        await this.refreshTrainingStatus()
-        this._trainingTimer = this.training?.is_training
-          ? setTimeout(tick, TRAINING_POLL_MS)
-          : null
-      }
-      this._trainingTimer = setTimeout(tick, 0)
+      const loops = loopsFor(this)
+      if (!loops.training) loops.training = createPollingLoop(async (context) => {
+        await this.refreshTrainingStatus(context)
+        return this.training?.is_training ?? false
+      }, TRAINING_POLL_MS)
+      loops.training.start()
     },
 
     async exportAndRegister(exportPath: string, loraOutputDir: string, registryName: string, addToRegistry: (name: string, path: string) => void) {
@@ -258,12 +279,11 @@ export const useLoraTrainingStore = defineStore('loraTraining', {
     },
 
     stopBackgroundTasks() {
-      if (this._autoLabelTimer) clearTimeout(this._autoLabelTimer)
-      if (this._preprocessTimer) clearTimeout(this._preprocessTimer)
-      if (this._trainingTimer) clearTimeout(this._trainingTimer)
-      this._autoLabelTimer = null
-      this._preprocessTimer = null
-      this._trainingTimer = null
+      this._backgroundGeneration++
+      const loops = loopsFor(this)
+      loops.autoLabel?.stop()
+      loops.preprocess?.stop()
+      loops.training?.stop()
     },
   },
 })

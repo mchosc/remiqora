@@ -11,14 +11,92 @@ import shutil
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from .config import DATA_DIR
+from .contracts import JsonObject
 
 DB_PATH = DATA_DIR / "aicollector.db"
 FILES_DIR = DATA_DIR / "files"
+VIDEOS_DIR = DATA_DIR / "videos"
 
 _db: Optional[sqlite3.Connection] = None
+# Shown on the track list. After 999999 the next track takes the smallest
+# free number again, so two saved tracks never share a number.
+SHORT_ID_MAX = 999_999
+
+
+class TrackNumbersFull(Exception):
+    """Every number from 1 through 999999 is already on a saved track."""
+
+
+def next_short_id(last: int, used: set[int]) -> int:
+    """The next free track number after last, wrapping to 1 past 999999."""
+    if len(used) >= SHORT_ID_MAX:
+        raise TrackNumbersFull()
+    try:
+        cursor = int(last)
+    except (TypeError, ValueError):
+        cursor = 0
+    if cursor < 0:
+        cursor = 0
+    for _ in range(SHORT_ID_MAX):
+        cursor = 1 if cursor >= SHORT_ID_MAX else cursor + 1
+        if cursor not in used:
+            return cursor
+    raise TrackNumbersFull()
+
+
+def ensure_track_codes(db: sqlite3.Connection) -> None:
+    """Give every saved track a short number and remember the last one issued."""
+    cols = {row["name"] for row in db.execute("PRAGMA table_info(tracks)").fetchall()}
+    if "short_id" not in cols:
+        db.execute("ALTER TABLE tracks ADD COLUMN short_id INTEGER")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_short_id ON tracks(short_id)")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS track_code (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_short_id INTEGER NOT NULL
+        )
+        """
+    )
+    rows = db.execute("SELECT id, short_id FROM tracks ORDER BY id").fetchall()
+    used = {int(row["short_id"]) for row in rows if row["short_id"]}
+    last = max(used) if used else 0
+    changed = False
+    for row in rows:
+        if row["short_id"]:
+            continue
+        preferred = int(row["id"])
+        if 1 <= preferred <= SHORT_ID_MAX and preferred not in used:
+            chosen = preferred
+        else:
+            chosen = next_short_id(last, used)
+        db.execute("UPDATE tracks SET short_id = ? WHERE id = ?", (chosen, row["id"]))
+        used.add(chosen)
+        last = max(last, chosen)
+        changed = True
+    stored = db.execute("SELECT last_short_id FROM track_code WHERE id = 1").fetchone()
+    if stored is None:
+        db.execute("INSERT INTO track_code (id, last_short_id) VALUES (1, ?)", (last,))
+        changed = True
+    if changed:
+        db.commit()
+
+
+def take_short_id(db: sqlite3.Connection) -> int:
+    """Reserve the next track number. Caller holds the write transaction."""
+    row = db.execute("SELECT last_short_id FROM track_code WHERE id = 1").fetchone()
+    last = int(row["last_short_id"]) if row else 0
+    used = {int(item[0]) for item in db.execute("SELECT short_id FROM tracks WHERE short_id IS NOT NULL")}
+    chosen = next_short_id(last, used)
+    db.execute(
+        "INSERT INTO track_code (id, last_short_id) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET last_short_id = excluded.last_short_id",
+        (chosen,),
+    )
+    return chosen
 
 
 def get_db() -> sqlite3.Connection:
@@ -42,6 +120,7 @@ def get_db() -> sqlite3.Connection:
                 seed INTEGER,
                 duration_ms REAL,
                 wall_ms REAL,
+                is_favorite INTEGER NOT NULL DEFAULT 0 CHECK(is_favorite IN (0, 1)),
                 params_json TEXT NOT NULL DEFAULT '{}',
                 audio_path TEXT NOT NULL,
                 abc_path TEXT
@@ -59,6 +138,9 @@ def get_db() -> sqlite3.Connection:
         if "midi_json" not in cols:
             _db.execute("ALTER TABLE tracks ADD COLUMN midi_json TEXT")
             _db.commit()
+        if "is_favorite" not in cols:
+            _db.execute("ALTER TABLE tracks ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0 CHECK(is_favorite IN (0, 1))")
+            _db.commit()
         _db.execute(
             """
             CREATE TABLE IF NOT EXISTS projects (
@@ -75,7 +157,33 @@ def get_db() -> sqlite3.Connection:
         _db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC);")
         _db.execute("CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);")
         _db.commit()
+        ensure_track_codes(_db)
+        _db.execute("""
+            CREATE TABLE IF NOT EXISTS ace_jobs (
+                task_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                results_json TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        _db.execute("""
+            CREATE TABLE IF NOT EXISTS ace_candidates (
+                task_id TEXT NOT NULL REFERENCES ace_jobs(task_id) ON DELETE CASCADE,
+                candidate_index INTEGER NOT NULL CHECK(candidate_index >= 0),
+                track_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+                voice_started INTEGER NOT NULL DEFAULT 0 CHECK(voice_started IN (0,1)),
+                PRIMARY KEY(task_id, candidate_index)
+            )
+        """)
+        _db.commit()
+        from .audio_version_store import migrate as migrate_audio_versions
+        migrate_audio_versions(_db)
     return _db
+
+
+def videos_dir() -> Path:
+    VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEOS_DIR
 
 
 def model_dir(model: str) -> Path:
@@ -100,41 +208,72 @@ def insert_track(
     seed: Optional[int],
     duration_ms: Optional[float],
     wall_ms: Optional[float],
-    params: dict[str, Any],
+    params: JsonObject,
     audio_path: Path,
     abc_path: Optional[Path],
+    ace_candidate: tuple[str, int] | None = None,
+    audio_version_id: str | None = None,
 ) -> int:
     db = get_db()
-    cur = db.execute(
-        "INSERT INTO tracks (model, created_at, title, lyrics, seed, duration_ms, wall_ms, params_json, audio_path, abc_path)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            model,
-            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            title,
-            lyrics,
-            seed,
-            duration_ms,
-            wall_ms,
-            json.dumps(params, ensure_ascii=False),
-            str(audio_path),
-            str(abc_path) if abc_path else None,
-        ),
-    )
-    db.commit()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        short_id = take_short_id(db)
+        cur = db.execute(
+            "INSERT INTO tracks (model, created_at, title, lyrics, seed, duration_ms, wall_ms, params_json, audio_path, abc_path, short_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                model,
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                title,
+                lyrics,
+                seed,
+                duration_ms,
+                wall_ms,
+                json.dumps(params, ensure_ascii=False),
+                str(audio_path),
+                str(abc_path) if abc_path else None,
+                short_id,
+            ),
+        )
+        if cur.lastrowid is None:
+            raise RuntimeError("Track insert did not return an ID")
+        if ace_candidate is not None:
+            db.execute(
+                "INSERT INTO ace_candidates (task_id, candidate_index, track_id) VALUES (?, ?, ?)",
+                (*ace_candidate, cur.lastrowid),
+            )
+        if audio_version_id is not None:
+            attached = db.execute("UPDATE audio_versions SET worker_track_id=? WHERE id=? AND kind='voice' AND worker_track_id IS NULL",
+                                  (cur.lastrowid, audio_version_id))
+            if attached.rowcount != 1:
+                raise ValueError('invalid_audio_version_attachment')
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return cur.lastrowid
 
 
 def list_tracks(model: Optional[str] = None) -> list[sqlite3.Row]:
     db = get_db()
+    visible = 'NOT EXISTS (SELECT 1 FROM audio_versions av WHERE av.worker_track_id=tracks.id AND av.track_id!=tracks.id)'
     if model:
-        return db.execute("SELECT * FROM tracks WHERE model = ? ORDER BY id DESC", (model,)).fetchall()
-    return db.execute("SELECT * FROM tracks ORDER BY id DESC").fetchall()
+        return db.execute(f"SELECT * FROM tracks WHERE model = ? AND {visible} ORDER BY id DESC", (model,)).fetchall()
+    return db.execute(f"SELECT * FROM tracks WHERE {visible} ORDER BY id DESC").fetchall()
 
 
 def get_track(track_id: int) -> Optional[sqlite3.Row]:
     db = get_db()
     return db.execute("SELECT * FROM tracks WHERE id = ?", (track_id,)).fetchone()
+
+
+def update_track_audio(track_id: int, audio_path: Path) -> bool:
+    db = get_db()
+    if not get_track(track_id):
+        return False
+    db.execute("UPDATE tracks SET audio_path = ? WHERE id = ?", (str(audio_path), track_id))
+    db.commit()
+    return True
 
 
 def update_track_title(track_id: int, title: str) -> bool:
@@ -144,6 +283,15 @@ def update_track_title(track_id: int, title: str) -> bool:
     db.execute("UPDATE tracks SET title = ? WHERE id = ?", (title, track_id))
     db.commit()
     return True
+
+
+def set_track_favorite(track_id: int, is_favorite: bool) -> bool:
+    connection = get_db()
+    cursor = connection.execute(
+        "UPDATE tracks SET is_favorite = ? WHERE id = ?", (int(is_favorite), track_id),
+    )
+    connection.commit()
+    return cursor.rowcount == 1
 
 
 def update_track_stems(track_id: int, stems: Optional[dict[str, str]]) -> None:
@@ -260,6 +408,8 @@ def delete_track(track_id: int) -> bool:
     row = get_track(track_id)
     if not row:
         return False
+    from .audio_versions import remove_track_files
+    remove_track_files(track_id)
     for p in (row["audio_path"], row["abc_path"]):
         if p:
             try:

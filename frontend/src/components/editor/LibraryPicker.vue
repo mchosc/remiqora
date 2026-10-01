@@ -91,7 +91,9 @@ async function onFileSelected(event: Event) {
 
         <div v-else class="space-y-2">
           <div v-for="trk in tracks" :key="trk.id" class="rounded-lg border border-border bg-panel-2 p-2">
-            <p class="truncate text-xs font-medium text-text">{{ trk.title || t('library.untitled') }}</p>
+            <p class="truncate text-xs font-medium text-text">
+              <span v-if="trk.short_id" class="tabular-nums text-text-dim">{{ trk.short_id }} · </span>{{ trk.title || t('library.untitled') }}
+            </p>
             <div class="mt-1 flex flex-wrap gap-1.5">
               <button
                 type="button"

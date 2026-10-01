@@ -2,21 +2,90 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAceStepStore } from '../../stores/aceStep'
-import type { AceJob } from '../../stores/aceStep'
+import { isVoiceReplacement, type AceJob } from '../../stores/aceStep'
+import { trackAudioUrl } from '../../api/tracks'
 import { formatDuration } from '../../composables/formatDuration'
 import StatusBadge from '../../components/shared/StatusBadge.vue'
 import ProgressBar from '../../components/shared/ProgressBar.vue'
 import WaveformPlayer from '../../components/shared/WaveformPlayer.vue'
+import TrackAudioVersions from '../../components/shared/TrackAudioVersions.vue'
+import FavoriteTrackButton from '../../components/shared/FavoriteTrackButton.vue'
 import BatchABPlayer from '../../components/shared/BatchABPlayer.vue'
 import StemsPanel from '../../components/shared/StemsPanel.vue'
 import MidiPanel from '../../components/shared/MidiPanel.vue'
 import EditableTitle from '../../components/shared/EditableTitle.vue'
+import { voiceErrorText, VoiceApplyError } from '../../api/voices'
+import { ApiError } from '../../api/http'
+import VoiceApplyStatus from '../../components/shared/VoiceApplyStatus.vue'
 
-const props = defineProps<{ job: AceJob }>()
+const props = defineProps<{ job: AceJob, number: string, view: 'cards' | 'list'; visibleTrackIds?: readonly number[]; favoritesOnly?: boolean }>()
 const store = useAceStepStore()
 const { t, locale } = useI18n()
 const showDetails = ref(false)
+const rowOpen = ref(false)
 const copied = ref(false)
+const actionError = ref('')
+const actionPending = ref(false)
+const savedTracks = computed(() => props.job.dbIds.map((id, index) => ({ id, index })).filter((track) => !props.visibleTrackIds || props.visibleTrackIds.includes(track.id)))
+const singleSavedTrack = computed(() => props.job.dbIds.length === 1 ? savedTracks.value[0] : undefined)
+function favoriteLabel(index: number): string {
+  const title = props.job.title || t('aceJob.noDescription')
+  return props.job.dbIds.length > 1 ? `${title} · ${t('trackAudio.variant', { index: index + 1 })}` : title
+}
+
+const showBody = computed(() => props.view === 'cards' || rowOpen.value)
+const voiceRunning = computed(() => props.job.voiceApply === 'running')
+const replacement = computed(() => isVoiceReplacement(props.job))
+const sourceTrackId = computed(() => {
+  const id = props.job.params?.source_track_id
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null
+})
+const replacementCancelled = computed(() => replacement.value && props.job.voiceErrorCode === 'cancelled')
+const shownStatus = computed(() => voiceRunning.value ? 'running' : replacement.value && props.job.voiceApply === 'failed' ? replacementCancelled.value ? 'cancelled' : 'failed' : props.job.status)
+const voiceDurationSec = computed(() => {
+  if (props.job.durationSec && props.job.durationSec > 0) return props.job.durationSec
+  const requested = Number(props.job.params?.audio_duration)
+  return Number.isFinite(requested) && requested > 0 ? requested : null
+})
+
+const summary = computed(() => {
+  const params = props.job.params || {}
+  const bits: string[] = []
+  if (props.job.durationSec) bits.push(formatDuration(props.job.durationSec))
+  if (params.bpm) bits.push(`${params.bpm} BPM`)
+  if (params.key_scale) bits.push(String(params.key_scale))
+  if (params.time_signature) bits.push(String(params.time_signature))
+  if (params.vocal_language) bits.push(String(params.vocal_language))
+  bits.push(replacement.value ? t('aceGen.replacementResult') : props.job.model || t('aceJob.defaultModel'))
+  if (props.job.voiceApply === 'running') {
+    bits.push(props.job.voiceName ? t('voiceClone.applyingNamed', { name: props.job.voiceName }) : t('voiceClone.applyingShort'))
+  } else if (props.job.voiceApply === 'done') {
+    bits.push(props.job.voiceName ? t('trackAudio.initialVoice', { name: props.job.voiceName }) : t('trackAudio.initialVoiceGeneric'))
+  }
+  return bits.join(' · ')
+})
+
+const detailRows = computed(() => {
+  const params = props.job.params || {}
+  const rows: { label: string, value: string }[] = []
+  const add = (label: string, value: unknown) => {
+    if (value == null || value === '') return
+    rows.push({ label, value: String(value) })
+  }
+  add(t('aceJob.trackId'), props.number)
+  add(t('aceJob.duration'), props.job.durationSec ? formatDuration(props.job.durationSec) : '')
+  add(t('aceJob.model'), props.job.model)
+  add(t('aceJob.bpm'), params.bpm)
+  add(t('aceJob.key'), params.key_scale)
+  add(t('aceJob.time'), params.time_signature)
+  add(t('aceJob.language'), params.vocal_language)
+  add(t('aceJob.seed'), params.seed)
+  add(t('aceJob.steps'), params.inference_steps)
+  add(t('aceJob.guidance'), params.guidance_scale)
+  add(t('aceJob.task'), replacement.value ? t('aceGen.replacementResult') : params.task_type)
+  add(t('aceJob.format'), props.job.audioFormat)
+  return rows
+})
 
 const createdLabel = computed(() => new Date(props.job.createdAt).toLocaleString(locale.value === 'ru' ? 'ru-RU' : 'en-US'))
 // Custom-mode style tags land in params.prompt, Simple-mode ones in
@@ -25,19 +94,33 @@ const createdLabel = computed(() => new Date(props.job.createdAt).toLocaleString
 // only place the full, untruncated style text is still available.
 const styleText = computed(() => {
   const p = props.job.params || {}
-  return (p.prompt as string) || (p.sample_query as string) || ''
+  return typeof p.prompt === 'string' && p.prompt ? p.prompt : (typeof p.sample_query === 'string' ? p.sample_query : '')
 })
 
-async function cancel() {
-  await store.cancel(props.job.id)
+async function perform(action: () => Promise<void>) {
+  if (actionPending.value) return
+  actionError.value = ''
+  actionPending.value = true
+  try { await action() } catch (error) {
+    actionError.value = error instanceof VoiceApplyError
+      ? voiceErrorText(error.code, error.detail)
+      : replacement.value && error instanceof ApiError
+        ? voiceErrorText(error.message)
+        : error instanceof Error ? error.message : t('storeErrors.unknownError')
+  }
+  finally { actionPending.value = false }
 }
+function cancel() { void perform(() => store.cancel(props.job.id)) }
 function remove() {
-  void store.removeJob(props.job.id)
+  void perform(() => store.removeJob(props.job.id))
 }
+function retrySave() { void perform(() => store.retrySave(props.job.id)) }
+function retryReplacement() { void perform(() => store.retryVoiceReplacement(props.job.id)) }
 function download(url: string, index: number) {
   const a = document.createElement('a')
   a.href = url
-  a.download = `${(props.job.title || 'track').replace(/[^\w\-]+/g, '_')}_${index + 1}.${props.job.audioFormat}`
+  const ext = props.job.voiceApply === 'done' ? 'wav' : props.job.audioFormat
+  a.download = `${(props.job.title || 'track').replace(/[^\w\-]+/g, '_')}_${index + 1}.${ext}`
   a.click()
 }
 function copyParamsToForm() {
@@ -45,7 +128,7 @@ function copyParamsToForm() {
   store.requestInsertParams({
     ...p,
     lyrics: props.job.lyrics || p.lyrics || '',
-    model: props.job.model || p.model,
+    model: props.job.model || p.model || '',
     audio_format: props.job.audioFormat || p.audio_format,
     query: props.job.title || p.query || '',
   })
@@ -56,60 +139,123 @@ function copyParamsToForm() {
 </script>
 
 <template>
-  <div class="space-y-3 rounded-xl border border-border bg-panel p-4">
-    <div class="flex items-start justify-between gap-3">
+  <div :class="view === 'list' ? 'bg-panel' : 'space-y-3 rounded-xl border border-border bg-panel p-4'">
+    <button
+      v-if="view === 'list'"
+      type="button"
+      class="flex w-full items-center gap-3 px-3 py-2 text-left"
+      @click="rowOpen = !rowOpen"
+    >
+      <span class="w-16 shrink-0 text-right text-sm tabular-nums text-text-dim">{{ number }}</span>
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-sm font-medium text-text">{{ job.title || t('aceJob.noDescription') }}</span>
+        <span class="block truncate text-xs text-text-dim">{{ summary }}</span>
+      </span>
+      <span class="shrink-0 text-xs text-text-dim">{{ rowOpen ? t('aceJob.hideDetails') : t('aceJob.showDetails') }}</span>
+    </button>
+    <div v-if="view === 'list' && savedTracks.length" class="flex flex-wrap items-center gap-3 px-3 pb-2">
+      <div v-for="track in savedTracks" :key="track.id" class="inline-flex items-center gap-1.5">
+        <span v-if="job.dbIds.length > 1" class="text-xs text-text-dim">{{ t('trackAudio.variant', { index: track.index + 1 }) }}</span>
+        <FavoriteTrackButton :track-id="track.id" :label="favoriteLabel(track.index)" />
+      </div>
+    </div>
+    <VoiceApplyStatus
+      v-if="voiceRunning && view === 'list'"
+      class="px-3 pb-2"
+      :phase="job.voicePhase"
+      :voice-name="job.voiceName"
+      :started-at="job.voiceStartedAt"
+      :duration-sec="voiceDurationSec"
+    />
+    <div v-if="showBody" :class="view === 'list' ? 'space-y-3 px-3 pb-3' : 'contents'">
+    <div v-if="view === 'cards'" class="flex items-start justify-between gap-3">
       <div class="min-w-0">
-        <EditableTitle
-          :model-value="job.title"
-          :placeholder="t('aceJob.noDescription')"
-          :editable="job.dbIds.length > 0"
-          @rename="(title) => store.renameJob(job.id, title)"
-        />
-        <p class="text-xs text-text-dim">{{ createdLabel }} · {{ job.model || t('aceJob.defaultModel') }}</p>
+        <div class="flex items-start gap-2">
+          <span class="mt-0.5 w-16 shrink-0 text-right text-sm tabular-nums text-text-dim">{{ number }}</span>
+          <EditableTitle
+            :model-value="job.title"
+            :placeholder="t('aceJob.noDescription')"
+            :editable="job.dbIds.length > 0"
+            @rename="(title) => store.renameJob(job.id, title)"
+          />
+        </div>
+        <p class="mt-0.5 pl-[4.5rem] text-xs text-text-dim">{{ summary }} · {{ createdLabel }}</p>
       </div>
       <div class="flex shrink-0 items-center gap-2">
-        <StatusBadge :status="job.status" />
-        <button v-if="job.status === 'queued' || job.status === 'running'" type="button" class="text-text-dim hover:text-status-failed" :title="t('aceJob.cancel')" @click="cancel">⏹</button>
-        <button v-else type="button" class="text-text-dim hover:text-status-failed" :title="t('aceJob.delete')" @click="remove">✕</button>
+        <FavoriteTrackButton v-if="singleSavedTrack" :track-id="singleSavedTrack.id" :label="favoriteLabel(singleSavedTrack.index)" />
+        <StatusBadge :status="shownStatus" :label="voiceRunning ? t('voiceClone.applyingBadge') : undefined" />
+        <button v-if="voiceRunning && replacement || !voiceRunning && (job.status === 'queued' || job.status === 'running')" type="button" :disabled="actionPending || job.voiceActionPending" class="text-text-dim hover:text-status-failed" :title="t('aceJob.cancel')" :aria-label="t('aceJob.cancel')" @click="cancel">⏹</button>
+        <button v-else type="button" :disabled="actionPending || job.voiceActionPending" class="text-text-dim hover:text-status-failed" :title="t('aceJob.delete')" :aria-label="t('aceJob.delete')" @click="remove">✕</button>
       </div>
     </div>
 
-    <div v-if="job.status === 'queued' || job.status === 'running'" class="space-y-1">
+    <VoiceApplyStatus
+      v-if="voiceRunning && view === 'cards'"
+      :phase="job.voicePhase"
+      :voice-name="job.voiceName"
+      :started-at="job.voiceStartedAt"
+      :duration-sec="voiceDurationSec"
+    />
+
+    <div v-else-if="job.status === 'queued' || job.status === 'running'" class="space-y-1">
       <ProgressBar :value="job.progress" />
       <p class="text-xs text-text-dim">{{ job.stage || (job.status === 'queued' ? t('aceJob.queued') : t('aceJob.generating')) }}</p>
     </div>
 
-    <div v-else-if="job.status === 'failed'" class="rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">{{ job.error }}</div>
+    <div v-else-if="job.status === 'failed'" class="space-y-2 rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">
+      <p>{{ job.error }}</p>
+      <button v-if="job.backendOwned && job.errorCode === 'save_failed'" type="button" class="text-accent1 hover:underline disabled:opacity-50" :disabled="actionPending" @click="retrySave">{{ t('aceJob.retrySave') }}</button>
+    </div>
     <div v-else-if="job.status === 'cancelled'" class="rounded-lg bg-panel-2 p-2 text-xs text-text-dim">{{ t('aceJob.cancelled') }}</div>
 
-    <div v-else-if="job.status === 'done'" class="space-y-2">
-      <!-- If multiple variants in batch, show seamless A/B player, otherwise single WaveformPlayer -->
-      <BatchABPlayer v-if="job.audioUrls.length > 1" :sources="job.audioUrls" :duration-sec="job.durationSec" />
-      <WaveformPlayer v-else-if="job.audioUrls.length === 1" :src="job.audioUrls[0]" />
+    <p v-if="actionError" class="text-xs text-status-failed" role="alert">{{ actionError }}</p>
+    <p v-if="job.voiceApply === 'failed'" role="alert" :class="replacementCancelled ? 'text-xs text-text-dim' : 'text-xs text-status-failed'">{{ replacementCancelled ? t('aceGen.replacementCancelled') : voiceErrorText(job.voiceErrorCode || '', job.voiceError || '') }}</p>
+    <div v-if="job.dbIds.length > 0 || job.audioUrls.length > 0 && (!replacement || job.voiceApply === 'done')" class="space-y-2">
+      <p v-if="job.voiceApply === 'done' && !job.dbIds.length" class="text-xs text-status-done">
+        {{ job.voiceName ? t('voiceClone.appliedNamed', { name: job.voiceName }) : t('voiceClone.applied') }}
+      </p>
+      <BatchABPlayer v-if="!favoritesOnly && job.audioUrls && job.audioUrls.length > 1" :sources="job.audioUrls" :duration-sec="job.durationSec" />
+      <WaveformPlayer v-else-if="!job.dbIds?.length && job.audioUrls?.length === 1" :src="job.audioUrls[0]" />
+      <div v-for="track in savedTracks" :key="'versions' + track.id" class="space-y-2">
+        <div v-if="job.dbIds.length > 1" class="flex flex-wrap items-center justify-between gap-2"><p class="text-xs font-medium text-text-dim">{{ t('trackAudio.variant', { index: track.index + 1 }) }}</p><FavoriteTrackButton v-if="view === 'cards'" :track-id="track.id" :label="favoriteLabel(track.index)" /></div>
+        <TrackAudioVersions :track-id="track.id" :fallback-audio-url="!replacement || job.voiceApply === 'done' ? job.audioUrls?.[track.index] : null" :voice-applying="voiceRunning" />
+      </div>
 
       <div class="flex flex-wrap items-center gap-3 text-xs text-text-dim">
         <span v-if="job.durationSec">{{ formatDuration(job.durationSec) }}</span>
-        <button v-for="(url, i) in job.audioUrls" :key="'dl' + url" type="button" class="text-accent1 hover:underline" @click="download(url, i)">
+        <button v-for="(url, i) in !job.dbIds?.length ? job.audioUrls : []" :key="'dl' + url" type="button" class="text-accent1 hover:underline" @click="download(url, i)">
           {{ t('aceJob.download') }}{{ job.audioUrls.length > 1 ? ` #${i + 1}` : '' }}
         </button>
       </div>
-      <div v-for="id in job.dbIds" :key="'stems' + id" class="space-y-1.5 pt-1">
-        <StemsPanel :track-id="id" :title="job.title" :lyrics="job.lyrics" model="ace_step" />
-        <MidiPanel :track-id="id" />
+      <div v-for="track in savedTracks" :key="'stems' + track.id" class="space-y-1.5 pt-1">
+        <p class="text-xs text-text-dim">{{ t('trackAudio.analysisHint') }}</p>
+        <StemsPanel :track-id="track.id" :title="job.title" :lyrics="job.lyrics" :model="job.origin ?? 'ace_step'" />
+        <MidiPanel :track-id="track.id" />
       </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-3">
-      <button type="button" class="text-xs text-accent hover:underline" @click="copyParamsToForm">
+      <a v-if="sourceTrackId" :href="trackAudioUrl(sourceTrackId)" download class="text-xs text-accent1 hover:underline">{{ t('aceGen.replacementSource') }}</a>
+      <button v-if="replacement && job.voiceApply === 'failed'" type="button" :disabled="actionPending || job.voiceActionPending" class="text-xs text-accent1 hover:underline disabled:opacity-50" @click="retryReplacement">{{ t('aceGen.replacementRetry') }}</button>
+      <button v-if="!replacement" type="button" class="text-xs text-accent hover:underline" @click="copyParamsToForm">
         {{ copied ? t('aceJob.copied') : t('aceJob.copyParams') }}
       </button>
-      <button v-if="job.lyrics || styleText" type="button" class="text-xs text-text-dim hover:underline" @click="showDetails = !showDetails">
+      <button v-if="view === 'list' && (voiceRunning && replacement || !voiceRunning && (job.status === 'queued' || job.status === 'running'))" type="button" :disabled="actionPending || job.voiceActionPending" class="text-xs text-text-dim hover:text-status-failed" @click="cancel">{{ t('aceJob.cancel') }}</button>
+      <button v-else-if="view === 'list'" type="button" :disabled="actionPending || job.voiceActionPending" class="text-xs text-text-dim hover:text-status-failed" @click="remove">{{ t('aceJob.delete') }}</button>
+      <button v-if="view === 'cards' && (job.lyrics || styleText || detailRows.length)" type="button" class="text-xs text-text-dim hover:underline" @click="showDetails = !showDetails">
         {{ showDetails ? t('aceJob.hideDetails') : t('aceJob.showDetails') }}
       </button>
     </div>
-    <div v-if="showDetails" class="space-y-1 rounded-lg bg-panel-2 p-2 text-xs text-text-dim">
+    <div v-if="showDetails || view === 'list'" class="space-y-2 rounded-lg bg-panel-2 p-2 text-xs text-text-dim">
+      <dl v-if="detailRows.length" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        <template v-for="row in detailRows" :key="row.label">
+          <dt>{{ row.label }}</dt>
+          <dd class="text-text">{{ row.value }}</dd>
+        </template>
+      </dl>
       <p v-if="styleText"><b>{{ t('aceJob.style') }}</b> {{ styleText }}</p>
       <p v-if="job.lyrics" class="whitespace-pre-wrap"><b>{{ t('aceJob.lyrics') }}</b> {{ job.lyrics }}</p>
+    </div>
     </div>
   </div>
 </template>

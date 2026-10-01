@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse
 from .. import db
 from .. import stems
 
+from ..client_contracts import StemsStatusResponse
+
 router = APIRouter(prefix="/api/tracks", tags=["stems"])
 
 
@@ -25,7 +27,7 @@ def _stem_urls(track_id: int, row) -> dict[str, str] | None:
     return {n: f"/api/tracks/{track_id}/stems/{n}" for n in names}
 
 
-@router.post("/{track_id}/stems")
+@router.post("/{track_id}/stems", response_model=StemsStatusResponse)
 async def start_stems(track_id: int, force: bool = False):
     row = db.get_track(track_id)
     if not row or not Path(row["audio_path"]).exists():
@@ -34,7 +36,7 @@ async def start_stems(track_id: int, force: bool = False):
     return {"status": job.status, "error": job.error}
 
 
-@router.post("/{track_id}/stems/cancel")
+@router.post("/{track_id}/stems/cancel", response_model=StemsStatusResponse)
 async def cancel_stems(track_id: int):
     row = db.get_track(track_id)
     if not row:
@@ -42,7 +44,7 @@ async def cancel_stems(track_id: int):
     return await stems.cancel(track_id)
 
 
-@router.get("/{track_id}/stems/status")
+@router.get("/{track_id}/stems/status", response_model=StemsStatusResponse)
 async def stems_status(track_id: int):
     row = db.get_track(track_id)
     if not row:

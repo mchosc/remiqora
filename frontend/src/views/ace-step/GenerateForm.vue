@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAceStepStore } from '../../stores/aceStep'
 import * as api from '../../api/aceStep'
@@ -9,31 +9,19 @@ import ChipGroup from '../../components/shared/ChipGroup.vue'
 import CollapsibleDetails from '../../components/shared/CollapsibleDetails.vue'
 import HelpModal from '../../components/shared/HelpModal.vue'
 import TagInput from '../../components/shared/TagInput.vue'
+import VoiceSelect from '../../components/shared/VoiceSelect.vue'
+import { ApiError } from '../../api/http'
+import { voiceErrorText, VoiceApplyError } from '../../api/voices'
+import { estimateTrackDuration } from '../../composables/estimateDuration'
+import { parseAcePresets, finiteNumber, type AcePreset } from '../../composables/generationPresets'
 
 const store = useAceStepStore()
+const props = withDefaults(defineProps<{ generationAvailable?: boolean | null }>(), { generationAvailable: true })
 const { t, tm } = useI18n()
 const { loras, add: addLora, remove: removeLora } = useLoraRegistry()
 
 type Mode = 'simple' | 'custom'
-type TaskType = 'cover' | 'repaint' | 'extract' | 'lego' | 'complete'
-
-interface AcePreset {
-  name: string
-  mode: Mode
-  simpleQuery: string
-  customPrompt: string
-  instrumental: boolean
-  customLyrics: string
-  duration: number
-  audioFormat: 'mp3' | 'wav' | 'flac'
-  bpm: number | null
-  keyScale: string
-  timeSignature: string
-  vocalLanguage: string
-  inferenceSteps: number | null
-  guidanceScale: number | null
-  selectedModel: string
-}
+type TaskType = 'cover' | 'repaint' | 'extract' | 'lego' | 'complete' | 'voice_replacement'
 
 const presets = ref<AcePreset[]>([])
 const selectedPresetName = ref('')
@@ -43,7 +31,10 @@ const showPresetInput = ref(false)
 function loadPresets() {
   try {
     const raw = localStorage.getItem('acestep_presets')
-    if (raw) presets.value = JSON.parse(raw)
+    if (raw) {
+      const value: unknown = JSON.parse(raw)
+      presets.value = parseAcePresets(value)
+    }
   } catch {}
 }
 
@@ -58,6 +49,7 @@ function saveCurrentPreset() {
     instrumental: instrumental.value,
     customLyrics: customLyrics.value,
     duration: duration.value,
+    durationAuto: durationAuto.value,
     audioFormat: audioFormat.value,
     bpm: bpm.value,
     keyScale: keyScale.value,
@@ -84,7 +76,11 @@ function applyPreset(name: string) {
   customPrompt.value = p.customPrompt || ''
   instrumental.value = !!p.instrumental
   customLyrics.value = p.customLyrics || ''
-  if (p.duration) duration.value = p.duration
+  if (p.duration) {
+    duration.value = p.duration
+    durationTouched.value = true
+  }
+  durationAuto.value = p.durationAuto === true
   if (p.audioFormat) audioFormat.value = p.audioFormat
   bpm.value = p.bpm ?? null
   keyScale.value = p.keyScale || ''
@@ -107,27 +103,35 @@ watch(
   () => store.pendingParamsInsert,
   (params) => {
     if (!params) return
-    if (params.prompt || params.query) {
-      if (params.prompt) {
-        mode.value = 'custom'
-        customPrompt.value = params.prompt
-      } else if (params.query) {
-        mode.value = 'simple'
-        simpleQuery.value = params.query
-      }
+    if (typeof params.prompt === 'string' && params.prompt) {
+      mode.value = 'custom'
+      customPrompt.value = params.prompt
+    } else if (typeof params.sample_query === 'string' || typeof params.query === 'string') {
+      mode.value = 'simple'
+      simpleQuery.value = typeof params.sample_query === 'string' ? params.sample_query : (typeof params.query === 'string' ? params.query : '')
     }
-    if (params.lyrics != null) customLyrics.value = params.lyrics
-    if (params.instrumental != null) instrumental.value = params.instrumental
-    if (params.duration != null) duration.value = params.duration
-    if (params.audio_format != null) audioFormat.value = params.audio_format
-    if (params.bpm != null) bpm.value = params.bpm
-    if (params.key_scale != null) keyScale.value = params.key_scale
-    if (params.time_signature != null) timeSignature.value = params.time_signature
-    if (params.vocal_language != null) vocalLanguage.value = params.vocal_language
-    if (params.inference_steps != null) inferenceSteps.value = params.inference_steps
-    if (params.guidance_scale != null) guidanceScale.value = params.guidance_scale
-    if (params.seed != null) seedValue.value = params.seed
-    if (params.model != null) selectedModel.value = params.model
+    if (typeof params.lyrics === 'string') customLyrics.value = params.lyrics
+    if (typeof params.instrumental === 'boolean') instrumental.value = params.instrumental
+    if (finiteNumber(params.audio_duration)) {
+      if (params.audio_duration > 0) {
+        durationTouched.value = true
+        duration.value = Math.min(300, Math.max(10, params.audio_duration))
+        durationAuto.value = false
+      } else durationAuto.value = true
+    } else if (finiteNumber(params.duration)) {
+      durationTouched.value = true
+      duration.value = Math.min(300, Math.max(10, params.duration))
+      durationAuto.value = false
+    }
+    if (params.audio_format === 'mp3' || params.audio_format === 'wav' || params.audio_format === 'flac') audioFormat.value = params.audio_format
+    if (finiteNumber(params.bpm)) bpm.value = params.bpm
+    if (typeof params.key_scale === 'string') keyScale.value = params.key_scale
+    if (typeof params.time_signature === 'string') timeSignature.value = params.time_signature
+    if (typeof params.vocal_language === 'string') vocalLanguage.value = params.vocal_language
+    if (finiteNumber(params.inference_steps)) inferenceSteps.value = params.inference_steps
+    if (finiteNumber(params.guidance_scale)) guidanceScale.value = params.guidance_scale
+    if (finiteNumber(params.seed)) seedValue.value = params.seed
+    if (typeof params.model === 'string') selectedModel.value = params.model
     store.clearPendingParamsInsert()
   },
 )
@@ -141,6 +145,11 @@ const customLyrics = ref('')
 const useRefAudio = ref(false)
 const refAudioFile = ref<File | null>(null)
 const taskType = ref<TaskType>('cover')
+const selectedVoiceId = ref<string | null>(null)
+const isVoiceReplacement = computed(() => useRefAudio.value && taskType.value === 'voice_replacement')
+watch(() => props.generationAvailable, (available) => {
+  if (available === false) { useRefAudio.value = true; taskType.value = 'voice_replacement' }
+}, { immediate: true })
 const repaintStart = ref<number | null>(null)
 const repaintEnd = ref<number | null>(null)
 const trackName = ref('vocals')
@@ -148,6 +157,8 @@ const trackClasses = ref<string[]>([])
 const coverStrength = ref(1)
 
 const duration = ref(120)
+const durationAuto = ref(true)
+const durationTouched = ref(false)
 const batchSize = ref<1 | 2 | 4>(1)
 
 const audioFormat = ref<'mp3' | 'wav' | 'flac'>('mp3')
@@ -172,6 +183,7 @@ const formError = ref('')
 const helpOpen = ref<null | 'style' | 'lyrics' | 'remix' | 'advanced'>(null)
 
 const TASK_TYPES = computed<{ value: TaskType; label: string }[]>(() => [
+  { value: 'voice_replacement', label: t('aceGen.taskTypes.voice_replacement') },
   { value: 'cover', label: t('aceGen.taskTypes.cover') },
   { value: 'repaint', label: t('aceGen.taskTypes.repaint') },
   { value: 'extract', label: t('aceGen.taskTypes.extract') },
@@ -241,12 +253,14 @@ const supportedTaskTypes = computed<Set<string>>(() => {
   const list = selectedModelInfo.value?.supported_task_types
   return list && list.length ? new Set(list) : new Set(TASK_TYPES.value.map((tt) => tt.value))
 })
-const taskTypeOptions = computed(() => TASK_TYPES.value.map((tt) => ({ ...tt, disabled: !supportedTaskTypes.value.has(tt.value) })))
+const taskTypeOptions = computed(() => TASK_TYPES.value.map((tt) => ({ ...tt, disabled: tt.value !== 'voice_replacement' && (!props.generationAvailable || !supportedTaskTypes.value.has(tt.value)) })))
 
 watch(
   () => store.inventory,
   (inv) => {
-    if (inv && !selectedModel.value) selectedModel.value = inv.default_model
+    if (inv && !inv.models.some((model) => model.name === selectedModel.value)) {
+      selectedModel.value = inv.models.some((model) => model.name === inv.default_model) ? inv.default_model : inv.models[0]?.name ?? ''
+    }
   },
   { immediate: true },
 )
@@ -257,7 +271,7 @@ watch(isTurbo, (turbo) => {
 }, { immediate: true })
 
 watch(supportedTaskTypes, (set) => {
-  if (!set.has(taskType.value)) {
+  if (taskType.value !== 'voice_replacement' && !set.has(taskType.value)) {
     const fallback = TASK_TYPES.value.find((tt) => set.has(tt.value))
     if (fallback) taskType.value = fallback.value
   }
@@ -267,10 +281,11 @@ watch(supportedTaskTypes, (set) => {
 // exporting a checkpoint via the LoRA training page copies that checkpoint dir as-is, so
 // the actual PEFT adapter path can end up one level deeper than the registered path.
 // Probe both nestings rather than requiring the registry entry to be exactly right.
-async function loadLoraWithFallback(path: string, name?: string) {
+async function loadLoraWithFallback(path: string, token: number, name?: string) {
   const candidates = [path, `${path}/adapter`, `${path}/adapter/adapter`]
   let lastErr: unknown
   for (const candidate of candidates) {
+    if (!formAlive || token !== loraRequest) return
     try {
       await api.loraLoad(candidate, name)
       return
@@ -281,35 +296,47 @@ async function loadLoraWithFallback(path: string, name?: string) {
   throw lastErr
 }
 
+let formAlive = true
+let loraRequest = 0
+onBeforeUnmount(() => {
+  formAlive = false
+  loraRequest++
+  if (loraDebounce) clearTimeout(loraDebounce)
+})
+
 let loraDebounce: ReturnType<typeof setTimeout> | null = null
 watch(selectedLoraPath, async (path) => {
+  const token = ++loraRequest
   loraStatus.value = ''
   try {
     if (!path) {
       await api.loraUnload()
     } else {
       const entry = loras.value.find((l) => l.path === path)
-      await loadLoraWithFallback(path, entry?.name)
+      await loadLoraWithFallback(path, token, entry?.name)
+      if (!formAlive || token !== loraRequest) return
       await api.loraScale(loraScaleVal.value)
     }
   } catch (err) {
-    loraStatus.value = err instanceof Error ? err.message : String(err)
+    if (formAlive && token === loraRequest) loraStatus.value = err instanceof Error ? err.message : String(err)
   }
 })
 watch(loraScaleVal, (scale) => {
   if (!selectedLoraPath.value) return
   if (loraDebounce) clearTimeout(loraDebounce)
+  const token = loraRequest
   loraDebounce = setTimeout(async () => {
+    if (!formAlive || token !== loraRequest) return
     try {
       await api.loraScale(scale)
     } catch (err) {
-      loraStatus.value = err instanceof Error ? err.message : String(err)
+      if (formAlive && token === loraRequest) loraStatus.value = err instanceof Error ? err.message : String(err)
     }
   }, 300)
 })
 
 function onRefFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0] ?? null
+  const file = e.target instanceof HTMLInputElement ? e.target.files?.[0] ?? null : null
   refAudioFile.value = file
 }
 
@@ -320,17 +347,61 @@ function registerNewLora() {
 }
 
 const inferenceStepsPlaceholder = computed(() => (isTurbo.value ? t('aceGen.inferenceStepsTurbo') : t('aceGen.inferenceStepsNormal')))
-const durationLabel = computed(() => {
-  const m = Math.floor(duration.value / 60)
-  const s = duration.value % 60
-  return `${m}:${String(s).padStart(2, '0')} (${duration.value}s)`
+function clockLabel(totalSeconds: number): string {
+  const rounded = Math.max(0, Math.round(totalSeconds))
+  const m = Math.floor(rounded / 60)
+  const s = rounded % 60
+  return `${m}:${String(s).padStart(2, '0')} (${rounded}s)`
+}
+
+const durationLabel = computed(() => clockLabel(duration.value))
+const fit = computed(() => estimateTrackDuration({
+  lyrics: mode.value === 'custom' && !instrumental.value ? customLyrics.value : '',
+  instrumental: mode.value === 'custom' && instrumental.value,
+  bpm: bpm.value,
+}))
+const fitLabel = computed(() => clockLabel(fit.value.suggested))
+const fitText = computed(() => {
+  if (!durationAuto.value && fit.value.suggested > 300 && fit.value.kind === 'lyrics') {
+    return t('aceGen.durationCapped', { value: fitLabel.value, max: clockLabel(300) })
+  }
+  if (fit.value.kind === 'instrumental') return t('aceGen.durationFitInstrumental', { value: fitLabel.value })
+  if (fit.value.kind === 'lyrics') return t('aceGen.durationFit', { value: fitLabel.value })
+  return t('aceGen.durationFitFull', { value: fitLabel.value })
 })
 
+watch(durationAuto, (auto, wasAuto) => {
+  if (wasAuto && !auto && !durationTouched.value) duration.value = fit.value.slider
+})
+
+function useFitLength() {
+  duration.value = fit.value.slider
+  durationTouched.value = true
+  durationAuto.value = false
+}
+
 async function submit() {
+  if (submitting.value) return
   formError.value = ''
+  if (isVoiceReplacement.value) {
+    const file = refAudioFile.value
+    const voiceId = selectedVoiceId.value
+    if (!file) { formError.value = t('aceGen.selectRefFile'); return }
+    if (!voiceId) { formError.value = t('aceGen.replacementSelectVoice'); return }
+    submitting.value = true
+    try { await store.submitVoiceReplacement(file, voiceId) }
+    catch (error) {
+      if (formAlive) formError.value = error instanceof VoiceApplyError
+        ? voiceErrorText(error.code, error.detail)
+        : error instanceof ApiError ? voiceErrorText(error.message) : error instanceof Error ? error.message : t('storeErrors.unknownError')
+    }
+    finally { if (formAlive) submitting.value = false }
+    return
+  }
+  if (!props.generationAvailable) { formError.value = t('aceGen.generationUnavailable'); return }
 
   const req: GenerateMusicRequest = {
-    audio_duration: duration.value,
+    audio_duration: durationAuto.value ? -1 : duration.value,
     batch_size: batchSize.value,
     audio_format: audioFormat.value,
   }
@@ -373,7 +444,7 @@ async function submit() {
   if (selectedModel.value) req.model = selectedModel.value
 
   let refFile: File | null = null
-  if (useRefAudio.value) {
+  if (useRefAudio.value && taskType.value !== 'voice_replacement') {
     if (!refAudioFile.value) {
       formError.value = t('aceGen.selectRefFile')
       return
@@ -403,11 +474,14 @@ async function submit() {
 <template>
   <div class="lg:sticky lg:top-20 lg:self-start">
     <div class="space-y-4 rounded-xl border border-border bg-panel p-4">
-      <button type="button" class="accent-gradient w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting" @click="submit">
-        {{ submitting ? t('aceGen.submitting') : t('aceGen.submit') }}
+      <VoiceSelect link :label="isVoiceReplacement ? t('aceGen.replacementVoice') : undefined" :hint="isVoiceReplacement ? t('aceGen.replacementVoiceHint') : undefined" @select="selectedVoiceId = $event" />
+      <button type="button" class="accent-gradient w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting || (isVoiceReplacement ? !refAudioFile || !selectedVoiceId : !generationAvailable)" @click="submit">
+        {{ submitting ? t(isVoiceReplacement ? 'aceGen.replacementUploading' : 'aceGen.submitting') : t(isVoiceReplacement ? 'aceGen.replaceVoice' : 'aceGen.submit') }}
       </button>
-      <p v-if="formError" class="rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">{{ formError }}</p>
+      <p v-if="formError" role="alert" class="rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">{{ formError }}</p>
+      <p v-if="!generationAvailable && !isVoiceReplacement" class="text-xs text-text-dim">{{ t('aceGen.generationUnavailable') }}</p>
 
+      <template v-if="!isVoiceReplacement">
       <!-- Preset bar -->
       <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-panel-2 p-2">
         <select
@@ -505,6 +579,7 @@ async function submit() {
         </div>
       </div>
 
+      </template>
       <div class="space-y-2 rounded-lg border border-border bg-panel-2/50 p-3">
         <label class="flex items-center justify-between text-sm">
           <span class="flex items-center gap-2 font-medium text-text">
@@ -514,10 +589,15 @@ async function submit() {
           <button type="button" class="text-xs text-accent1 hover:underline" @click="helpOpen = 'remix'">{{ t('common.help') }}</button>
         </label>
         <div v-if="useRefAudio" class="space-y-3 pt-1">
-          <input type="file" accept="audio/*" class="block w-full text-xs text-text-dim file:mr-3 file:rounded-md file:border-0 file:accent-gradient file:px-3 file:py-1.5 file:text-white" @change="onRefFileChange" />
+          <input type="file" :aria-label="t('aceGen.refFileLabel')" :accept="isVoiceReplacement ? '.wav,.mp3,.flac,.ogg,.opus,.m4a' : 'audio/*'" :disabled="submitting" class="block w-full text-xs text-text-dim file:mr-3 file:rounded-md file:border-0 file:accent-gradient file:px-3 file:py-1.5 file:text-white" @change="onRefFileChange" />
           <p v-if="refAudioFile" class="text-xs text-text-dim">{{ refAudioFile.name }}</p>
 
           <ChipGroup v-model="taskType" :options="taskTypeOptions" />
+          <div v-if="isVoiceReplacement" class="space-y-2 text-sm text-text-dim">
+            <p>{{ t('aceGen.replacementHint') }}</p>
+            <p class="text-xs">{{ t('aceGen.replacementLimits') }}</p>
+            <p v-if="!selectedVoiceId" class="text-xs text-status-queued">{{ t('aceGen.replacementSelectVoice') }}</p>
+          </div>
 
           <div v-if="taskType === 'repaint'" class="grid grid-cols-2 gap-2">
             <div>
@@ -549,9 +629,41 @@ async function submit() {
         </div>
       </div>
 
-      <div>
-        <label class="text-xs text-text-dim">{{ t('aceGen.duration', { value: durationLabel }) }}</label>
-        <input v-model.number="duration" type="range" min="10" max="300" step="5" class="w-full accent-accent1" />
+      <template v-if="!isVoiceReplacement">
+      <div class="space-y-1">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <label class="text-xs text-text-dim">{{ durationAuto ? t('aceGen.durationAuto', { value: fitLabel }) : t('aceGen.duration', { value: durationLabel }) }}</label>
+          <ChipGroup
+            :model-value="durationAuto ? 'auto' : 'set'"
+            :options="[
+              { value: 'auto', label: t('aceGen.durationAutoChoice') },
+              { value: 'set', label: t('aceGen.durationSetChoice') },
+            ]"
+            @update:model-value="(value) => { durationAuto = value === 'auto' }"
+          />
+        </div>
+        <input
+          v-if="!durationAuto"
+          v-model.number="duration"
+          type="range"
+          min="10"
+          max="300"
+          step="5"
+          class="w-full accent-accent1"
+          @input="durationTouched = true"
+        />
+        <p class="text-xs text-text-dim">
+          <template v-if="durationAuto">{{ t('aceGen.durationAutoHint') }}</template>
+          <template v-else>
+            {{ fitText }}
+            <button
+              v-if="duration !== fit.slider"
+              type="button"
+              class="ml-1 text-accent1 hover:underline"
+              @click="useFitLength"
+            >{{ t('aceGen.durationUseFit') }}</button>
+          </template>
+        </p>
       </div>
 
       <div>
@@ -620,9 +732,13 @@ async function submit() {
           </div>
           <div>
             <label class="text-xs text-text-dim">{{ t('aceGen.model') }}</label>
-            <select v-model="selectedModel" class="w-full rounded-lg border border-border bg-panel-2 p-2 text-sm text-text">
+            <select v-model="selectedModel" :aria-label="t('aceGen.model')" :disabled="!store.inventory?.models.length" class="w-full rounded-lg border border-border bg-panel-2 p-2 text-sm text-text disabled:opacity-50">
+              <option v-if="!store.inventory?.models.length" value="">{{ t(store.inventoryLoading ? 'aceGen.inventoryLoading' : 'aceGen.inventoryEmpty') }}</option>
               <option v-for="m in store.inventory?.models ?? []" :key="m.name" :value="m.name">{{ m.name }}</option>
             </select>
+            <p v-if="store.inventoryLoading" role="status" class="mt-1 text-xs text-text-dim">{{ t('aceGen.inventoryLoading') }}</p>
+            <p v-if="store.inventoryError" role="alert" class="mt-1 text-xs text-status-failed">{{ t('aceGen.inventoryUnavailable') }}</p>
+            <button v-if="store.inventoryError || !store.inventory?.models.length" type="button" :disabled="store.inventoryLoading" class="mt-1 text-xs text-accent1 hover:underline disabled:opacity-50" @click="store.loadInventory()">{{ t('aceGen.inventoryRetry') }}</button>
           </div>
         </div>
 
@@ -650,6 +766,7 @@ async function submit() {
           </ul>
         </div>
       </CollapsibleDetails>
+      </template>
     </div>
 
     <HelpModal :open="helpOpen === 'style'" :title="t('aceGen.help.style.title')" @close="helpOpen = null">

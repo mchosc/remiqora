@@ -2,12 +2,19 @@ import { acceptHMRUpdate, defineStore } from 'pinia'
 import * as api from '../api/yue2'
 import type { CotMode, GenerateOptions } from '../api/yue2'
 import * as tracksApi from '../api/tracks'
+import { applyStatus, applyVoiceAndWait, getActiveVoiceId, voiceNameFor, VoiceApplyError, waitForVoiceApply } from '../api/voices'
+import type { ApplyStatus } from '../api/voices'
+import { forgetVoiceClock, rememberVoiceClock, rememberVoiceUsed, voiceClock, voiceUsed } from './voiceClock'
+import { clearVoiceWatch, markVoiceWatch, noteVoice, voiceWatchActive } from './voiceWatch'
 import type { JobStatus } from '../types'
 import { i18n } from '../i18n'
+import { createPollingLoop, type PollContext, type PollingLoop } from '../composables/polling'
+import type { JsonObject } from '../api/contracts'
 
 const t = i18n.global.t
 
 const HEALTH_MS = 5000
+const healthLoops = new WeakMap<object, PollingLoop>()
 
 export interface Yue2Job {
   id: string
@@ -26,8 +33,16 @@ export interface Yue2Job {
   savedFilename?: string | null
   saveError?: string | null
   dbId?: number | null
+  shortId?: number | null
   finalized: boolean
-  params?: Record<string, any>
+  voiceApply?: 'running' | 'done' | 'failed'
+  voicePhase?: string
+  voiceId?: string
+  voiceName?: string
+  voiceStartedAt?: number
+  voiceError?: string
+  voiceErrorCode?: string
+  params?: JsonObject
 }
 
 export const useYue2Store = defineStore('yue2', {
@@ -39,64 +54,191 @@ export const useYue2Store = defineStore('yue2', {
     // Set by a TrackCard's "insert into form" action; GenerateForm watches
     // this and copies it into its own local ABC textarea state.
     pendingAbcInsert: null as string | null,
-    pendingParamsInsert: null as Record<string, any> | null,
+    pendingParamsInsert: null as JsonObject | null,
     _aborters: {} as Record<string, AbortController>,
-    _healthTimer: null as ReturnType<typeof setTimeout> | null,
+    _voiceAborters: {} as Record<number, AbortController>,
+    _historyGeneration: 0,
   }),
   actions: {
-    requestInsertParams(params: Record<string, any>) {
+    requestInsertParams(params: JsonObject) {
       this.pendingParamsInsert = { ...params }
     },
     clearPendingParamsInsert() {
       this.pendingParamsInsert = null
     },
     async loadHistory() {
+      const generation = ++this._historyGeneration
+      const isCurrent = () => generation === this._historyGeneration
       try {
         const tracks = await tracksApi.listTracks('yue2')
-        const savedJobs: Yue2Job[] = tracks.map((t) => ({
-          id: `saved_${t.id}`,
-          status: 'done',
-          createdAt: new Date(t.created_at).getTime() || Date.now(),
-          style: t.title,
-          lyrics: t.lyrics,
-          cot: (t.params.cot as CotMode) || 'off',
-          precision: (t.params.precision as 'q8_0' | 'q4_0') || 'q8_0',
-          seed: t.seed ?? 0,
-          audioUrl: t.audio_url,
-          abcPlan: t.abc_url ? '' : null,
-          durationSec: t.duration_ms ? t.duration_ms / 1000 : null,
-          wallSec: t.wall_ms ? t.wall_ms / 1000 : null,
-          savedFilename: t.filename,
-          dbId: t.id,
-          finalized: true,
-          params: t.params,
+        if (!isCurrent()) return
+        const savedJobs: Yue2Job[] = await Promise.all(tracks.map(async (track) => {
+          const voice = await this._savedVoice(track.id, track.audio_url, isCurrent)
+          const job: Yue2Job = {
+            id: `saved_${track.id}`,
+            status: 'done',
+            createdAt: new Date(track.created_at).getTime() || Date.now(),
+            style: track.title,
+            lyrics: track.lyrics,
+            cot: track.params.cot === 'melody' || track.params.cot === 'full' ? track.params.cot : 'off',
+            precision: track.params.precision === 'q4_0' ? 'q4_0' : 'q8_0',
+            seed: track.seed ?? 0,
+            audioUrl: voice.audioUrl || track.audio_url,
+            abcPlan: track.abc_url ? '' : null,
+            durationSec: track.duration_ms ? track.duration_ms / 1000 : null,
+            wallSec: track.wall_ms ? track.wall_ms / 1000 : null,
+            savedFilename: track.filename,
+            dbId: track.id,
+            shortId: track.short_id ?? null,
+            finalized: true,
+            params: track.params,
+            voiceApply: voice.voiceApply,
+            voicePhase: voice.voicePhase,
+            voiceId: voice.voiceId,
+            voiceName: voice.voiceName,
+            voiceStartedAt: voice.voiceStartedAt,
+            voiceError: voice.voiceError,
+            voiceErrorCode: voice.voiceErrorCode,
+          }
+          return job
         }))
+        if (!isCurrent()) return
         // Keep any jobs still in-flight this session (not yet in the saved list).
         const inFlightIds = new Set(this.jobs.filter((j) => !j.finalized).map((j) => j.id))
         this.jobs = [...this.jobs.filter((j) => inFlightIds.has(j.id)), ...savedJobs].sort((a, b) => b.createdAt - a.createdAt)
+        for (const job of this.jobs) {
+          if (job.voiceApply === 'running') this._followVoice(job)
+        }
       } finally {
-        this.historyLoaded = true
+        if (isCurrent()) this.historyLoaded = true
       }
     },
-    async refreshHealth() {
+    _trackJob(trackId: number): Yue2Job | undefined {
+      return this.jobs.find((job) => job.dbId === trackId)
+    },
+    _onVoice(trackId: number, row: ApplyStatus) {
+      const live = this._trackJob(trackId)
+      if (!live) return
+      if (row.status === 'done') {
+        if (row.audio_url) {
+          if (live.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(live.audioUrl)
+          live.audioUrl = row.audio_url
+        }
+        live.voiceApply = 'done'
+        live.voicePhase = ''
+        if (row.voice_id) live.voiceId = row.voice_id
+        if (row.voice_name) live.voiceName = row.voice_name
+        rememberVoiceUsed(trackId, live.voiceId || '', live.voiceName || '')
+        forgetVoiceClock(trackId)
+        return
+      }
+      if (row.status === 'failed' || row.status === 'cancelled' || row.status === 'idle') {
+        live.voiceApply = 'failed'
+        live.voicePhase = ''
+        live.voiceErrorCode = row.error_code || 'interrupted'
+        live.voiceError = row.error || ''
+        forgetVoiceClock(trackId)
+        return
+      }
+      const note = noteVoice(trackId, row)
+      live.voiceApply = 'running'
+      live.voicePhase = note.voicePhase
+      live.voiceId = note.voiceId
+      live.voiceName = note.voiceName
+      live.voiceStartedAt = note.voiceStartedAt
+    },
+    async _savedVoice(trackId: number, audioUrl: string, isCurrent: () => boolean): Promise<{
+      voiceApply?: Yue2Job['voiceApply']
+      voicePhase?: string
+      voiceId?: string
+      voiceName?: string
+      voiceStartedAt?: number
+      voiceError?: string
+      voiceErrorCode?: string
+      audioUrl?: string
+    }> {
       try {
-        this.health = await api.health()
+        const row = await applyStatus(trackId)
+        if (!isCurrent()) return {}
+        if (row.status === 'running' || row.status === 'queued') {
+          const note = noteVoice(trackId, row)
+          return { voiceApply: 'running', ...note }
+        }
+        if (row.status === 'done') {
+          const used = voiceUsed(trackId)
+          return {
+            voiceApply: 'done',
+            audioUrl: row.audio_url || audioUrl,
+            voiceId: row.voice_id || used?.voiceId,
+            voiceName: row.voice_name || used?.voiceName,
+          }
+        }
+        if (row.status === 'failed' || row.status === 'cancelled') {
+          return { voiceApply: 'failed', voiceError: row.error, voiceErrorCode: row.error_code }
+        }
+      } catch {
+        // A track with no voice step still lists normally.
+      }
+      return {}
+    },
+    _followVoice(job: Yue2Job) {
+      if (job.dbId == null || voiceWatchActive(job.dbId)) return
+      const trackId = job.dbId
+      markVoiceWatch(trackId)
+      const controller = new AbortController()
+      this._voiceAborters[trackId] = controller
+      const clock = voiceClock(trackId)
+      if (clock) {
+        job.voiceId = job.voiceId || clock.voiceId
+        job.voiceName = job.voiceName || clock.voiceName
+        job.voiceStartedAt = job.voiceStartedAt || clock.startedAt
+      }
+      void waitForVoiceApply(trackId, (row) => {
+        if (!controller.signal.aborted) this._onVoice(trackId, row)
+      }, controller.signal).then((url) => {
+        if (controller.signal.aborted) return
+        this._onVoice(trackId, { status: 'done', audio_url: url, error: '', error_code: '', phase: '' })
+      }).catch((err) => {
+        if (controller.signal.aborted) return
+        this._onVoice(trackId, {
+          status: 'failed',
+          audio_url: '',
+          error: err instanceof VoiceApplyError ? err.detail : (err instanceof Error ? err.message : String(err)),
+          error_code: err instanceof VoiceApplyError ? err.code : '',
+          phase: '',
+        })
+      }).finally(() => {
+        if (this._voiceAborters[trackId] !== controller) return
+        delete this._voiceAborters[trackId]
+        clearVoiceWatch(trackId)
+      })
+    },
+    async refreshHealth(context?: PollContext) {
+      try {
+        const health = await api.health(context?.signal)
+        if (context && !context.isCurrent()) return
+        this.health = health
         this.healthError = false
       } catch {
-        this.healthError = true
+        if (!context || context.isCurrent()) this.healthError = true
       }
     },
     startBackgroundTasks() {
-      if (this._healthTimer) return
-      const tick = async () => {
-        await this.refreshHealth()
-        this._healthTimer = setTimeout(tick, HEALTH_MS)
+      let loop = healthLoops.get(this)
+      if (!loop) {
+        loop = createPollingLoop((context) => this.refreshHealth(context), HEALTH_MS)
+        healthLoops.set(this, loop)
       }
-      void tick()
+      loop.start()
     },
     stopBackgroundTasks() {
-      if (this._healthTimer) clearTimeout(this._healthTimer)
-      this._healthTimer = null
+      this._historyGeneration++
+      healthLoops.get(this)?.stop()
+      for (const [trackId, controller] of Object.entries(this._voiceAborters)) {
+        controller.abort()
+        delete this._voiceAborters[Number(trackId)]
+        clearVoiceWatch(Number(trackId))
+      }
     },
     async generateBatch(params: { lyrics: string; style: string; cot: CotMode; precision: 'q8_0' | 'q4_0'; baseSeed: number; randomSeed: boolean; batchSize: number; options: GenerateOptions }) {
       const newJobs: Yue2Job[] = []
@@ -123,16 +265,18 @@ export const useYue2Store = defineStore('yue2', {
         // original (pre-unshift) reference never triggers a re-render even
         // though the same data ends up saved to the server correctly.
         const job = this.jobs.find((j) => j.id === id)
-        if (job) await this._generateOne(job, params.options)
+        if (job && job.status === 'queued' && !job.finalized) await this._generateOne(job, params.options)
       }
     },
     async _generateOne(job: Yue2Job, options: GenerateOptions) {
+      if (job.finalized || job.status === 'cancelled') return
       job.status = 'running'
       const aborter = new AbortController()
       this._aborters[job.id] = aborter
       try {
         const started = performance.now()
         const result = await api.generateTrack(job.lyrics, job.seed, options, job.precision, aborter.signal)
+        if (aborter.signal.aborted) return
         const wallMs = result.timing?.wall_ms ?? performance.now() - started
         const durationMs = result.timing?.audio_duration_ms
         if (typeof result.audio !== 'string') throw new Error(t('storeErrors.serverNoAudio'))
@@ -163,13 +307,47 @@ export const useYue2Store = defineStore('yue2', {
           job.savedFilename = saved.filename
           job.saveError = null
           job.dbId = saved.id
+          job.shortId = saved.short_id ?? null
+          const voiceId = getActiveVoiceId()
+          if (voiceId) {
+            const voiceName = await voiceNameFor(voiceId)
+            const startedAt = Date.now()
+            rememberVoiceClock(saved.id, { startedAt, voiceId, voiceName })
+            const arm = this._trackJob(saved.id)
+            if (arm) {
+              arm.voiceApply = 'running'
+              arm.voiceError = ''
+              arm.voiceErrorCode = ''
+              arm.voiceId = voiceId
+              arm.voiceName = voiceName
+              arm.voiceStartedAt = startedAt
+              arm.voicePhase = ''
+            }
+            markVoiceWatch(saved.id)
+            try {
+              const voiced = await applyVoiceAndWait(voiceId, saved.id, (row) => {
+                this._onVoice(saved.id, row)
+              })
+              this._onVoice(saved.id, { status: 'done', audio_url: voiced, error: '', error_code: '', phase: '' })
+            } catch (voiceErr) {
+              this._onVoice(saved.id, {
+                status: 'failed',
+                audio_url: '',
+                error: voiceErr instanceof VoiceApplyError ? voiceErr.detail : (voiceErr instanceof Error ? voiceErr.message : String(voiceErr)),
+                error_code: voiceErr instanceof VoiceApplyError ? voiceErr.code : '',
+                phase: '',
+              })
+            } finally {
+              clearVoiceWatch(saved.id)
+            }
+          }
         } catch (err) {
           job.savedFilename = null
           job.saveError = err instanceof Error ? err.message : String(err)
           job.dbId = null
         }
       } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
+        if (aborter.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
           job.status = 'cancelled'
         } else {
           job.status = 'failed'
@@ -181,6 +359,10 @@ export const useYue2Store = defineStore('yue2', {
       }
     },
     cancel(jobId: string) {
+      const job = this.jobs.find((row) => row.id === jobId)
+      if (!job || job.finalized) return
+      job.status = 'cancelled'
+      job.finalized = true
       this._aborters[jobId]?.abort()
     },
     requestInsertAbc(abc: string) {

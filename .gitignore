@@ -14,11 +14,21 @@ frontend/dist/
 external/ACE-Step-1.5/
 external/audio.cpp/
 external/Demucs/
+external/seed-vc/
+external/ltx-2-mlx/
+external/Music-Source-Separation-Training/
 
 # Editor/OS
 .DS_Store
 Thumbs.db
 *.log
+
+# Local configuration and isolated checkouts
+.env
+.env.*
+!.env.example
+.worktrees/
+worktrees/
 
 # Claude Code local settings (session permissions/config, not project-relevant)
 .claude/

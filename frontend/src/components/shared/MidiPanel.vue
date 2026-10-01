@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as midiApi from '../../api/midi'
 import type { MidiSource, MidiStatus } from '../../api/midi'
 import { drawPianoRoll, parseMidiBytes, playMidiNotes } from '../../audio/miniMidiPlayer'
 import type { MidiParsed, MidiSynthHandle } from '../../audio/miniMidiPlayer'
+import { createPollingLoop } from '../../composables/polling'
 
 const props = defineProps<{ trackId: number }>()
 const { t } = useI18n()
@@ -26,7 +27,11 @@ const playingSource = ref<string | null>(null)
 const openRollSource = ref<string | null>(null)
 let activeSynth: MidiSynthHandle | null = null
 
-let pollTimer: ReturnType<typeof setTimeout> | null = null
+let alive = true
+let generation = 0
+let playbackGeneration = 0
+let rollTimer: ReturnType<typeof setTimeout> | undefined
+const actionTokens = new Map<MidiSource, number>()
 
 function isBusy(source: MidiSource): boolean {
   const s = status.value?.sources[source]?.status
@@ -37,48 +42,79 @@ function anyBusy(): boolean {
   return !!status.value && status.value.available.some(isBusy)
 }
 
-function clearPoll() {
-  if (pollTimer != null) {
-    clearTimeout(pollTimer)
-    pollTimer = null
+const poll = createPollingLoop(async (context) => {
+  const trackId = props.trackId
+  const session = generation
+  try {
+    const response = await midiApi.getMidiStatus(trackId, context.signal)
+    if (!context.isCurrent() || !alive || session !== generation || trackId !== props.trackId) return false
+    status.value = response
+  } catch {
+    // A transient error keeps active backend jobs under observation.
   }
-}
+  return anyBusy()
+}, 2000)
 
-function schedulePoll() {
-  clearPoll()
-  pollTimer = setTimeout(async () => {
-    try {
-      status.value = await midiApi.getMidiStatus(props.trackId)
-    } catch {
-      // transient network error - keep polling on the same schedule
-    }
-    if (anyBusy()) schedulePoll()
-  }, 2000)
+function beginAction(source: MidiSource) {
+  poll.stop()
+  const token = (actionTokens.get(source) ?? 0) + 1
+  actionTokens.set(source, token)
+  const trackId = props.trackId
+  const session = generation
+  return { trackId, isCurrent: () => alive && session === generation && trackId === props.trackId && actionTokens.get(source) === token }
 }
 
 async function start(source: MidiSource, force = false) {
+  const context = beginAction(source)
   actionError.value = null
   try {
-    status.value = await midiApi.startTranscription(props.trackId, source, force)
+    const response = await midiApi.startTranscription(context.trackId, source, force)
+    if (!context.isCurrent()) return
+    poll.stop()
+    status.value = response
   } catch (e) {
+    if (!context.isCurrent()) return
     actionError.value = e instanceof Error ? e.message : String(e)
+    if (anyBusy()) poll.start(false)
     return
   }
-  schedulePoll()
+  poll.start(false)
 }
 
 async function cancel(source: MidiSource) {
-  clearPoll()
-  status.value = await midiApi.cancelTranscription(props.trackId, source)
+  const context = beginAction(source)
+  actionError.value = null
+  try {
+    const response = await midiApi.cancelTranscription(context.trackId, source)
+    if (!context.isCurrent()) return
+    poll.stop()
+    status.value = response
+  } catch (e) {
+    if (!context.isCurrent()) return
+    actionError.value = e instanceof Error ? e.message : String(e)
+  }
+  if (context.isCurrent() && anyBusy()) poll.start(false)
 }
 
 async function removeAll() {
   if (!window.confirm(t('midiPanel.confirmDeleteAll'))) return
+  generation++
+  actionTokens.clear()
+  poll.stop()
+  const session = generation
+  const trackId = props.trackId
+  const isCurrent = () => alive && session === generation && trackId === props.trackId
+  playbackGeneration++
   activeSynth?.stop()
   activeSynth = null
   playingSource.value = null
-  await midiApi.deleteMidi(props.trackId)
-  status.value = await midiApi.getMidiStatus(props.trackId)
+  await midiApi.deleteMidi(trackId)
+  if (!isCurrent()) return
+  const response = await midiApi.getMidiStatus(trackId)
+  if (!isCurrent()) return
+  midiCache.value = {}
+  status.value = response
+  if (anyBusy()) poll.start(false)
 }
 
 function download(source: MidiSource) {
@@ -94,9 +130,14 @@ async function getOrLoadMidi(source: MidiSource): Promise<MidiParsed | null> {
   if (midiCache.value[source]) return midiCache.value[source]
   const url = status.value?.urls[source]
   if (!url) return null
+  const session = generation
+  const trackId = props.trackId
+  const isCurrent = () => alive && session === generation && trackId === props.trackId && status.value?.urls[source] === url
   try {
     const resp = await fetch(url)
+    if (!isCurrent()) return null
     const buf = await resp.arrayBuffer()
+    if (!isCurrent()) return null
     const parsed = parseMidiBytes(buf)
     midiCache.value[source] = parsed
     return parsed
@@ -106,6 +147,7 @@ async function getOrLoadMidi(source: MidiSource): Promise<MidiParsed | null> {
 }
 
 async function togglePlayMidi(source: MidiSource) {
+  const token = ++playbackGeneration
   if (playingSource.value === source) {
     activeSynth?.stop()
     activeSynth = null
@@ -118,11 +160,11 @@ async function togglePlayMidi(source: MidiSource) {
   playingSource.value = null
 
   const parsed = await getOrLoadMidi(source)
-  if (!parsed || parsed.notes.length === 0) return
+  if (!alive || token !== playbackGeneration || !parsed || parsed.notes.length === 0) return
 
   playingSource.value = source
   activeSynth = playMidiNotes(parsed.notes, 0, () => {
-    if (playingSource.value === source) {
+    if (token === playbackGeneration && playingSource.value === source) {
       playingSource.value = null
       activeSynth = null
     }
@@ -130,33 +172,46 @@ async function togglePlayMidi(source: MidiSource) {
 }
 
 async function toggleRoll(source: MidiSource) {
+  if (rollTimer !== undefined) clearTimeout(rollTimer)
+  const session = generation
+  const trackId = props.trackId
   if (openRollSource.value === source) {
     openRollSource.value = null
     return
   }
   openRollSource.value = source
   const parsed = await getOrLoadMidi(source)
-  if (parsed) {
-    setTimeout(() => {
-      const canvas = document.getElementById(`roll-${props.trackId}-${source}`) as HTMLCanvasElement
-      if (canvas) drawPianoRoll(canvas, parsed.notes, parsed.durationSec)
+  if (alive && session === generation && openRollSource.value === source && parsed) {
+    rollTimer = setTimeout(() => {
+      rollTimer = undefined
+      if (!alive || session !== generation || openRollSource.value !== source) return
+      const canvas = document.getElementById(`roll-${trackId}-${source}`)
+      if (canvas instanceof HTMLCanvasElement) drawPianoRoll(canvas, parsed.notes, parsed.durationSec)
     }, 60)
   }
 }
 
-async function refresh() {
-  try {
-    status.value = await midiApi.getMidiStatus(props.trackId)
-    if (anyBusy()) schedulePoll()
-  } catch {
-    status.value = null
-  }
+function resetSession() {
+  generation++
+  playbackGeneration++
+  actionTokens.clear()
+  poll.stop()
+  if (rollTimer !== undefined) clearTimeout(rollTimer)
+  rollTimer = undefined
+  activeSynth?.stop()
+  activeSynth = null
+  playingSource.value = null
+  openRollSource.value = null
+  midiCache.value = {}
+  status.value = null
+  actionError.value = null
 }
 
-onMounted(refresh)
+watch(() => props.trackId, () => { resetSession(); poll.start() })
+onMounted(() => poll.start())
 onBeforeUnmount(() => {
-  clearPoll()
-  activeSynth?.stop()
+  alive = false
+  resetSession()
 })
 </script>
 

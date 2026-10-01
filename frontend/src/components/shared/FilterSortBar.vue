@@ -12,6 +12,8 @@ const props = defineProps<{
   visibleCount: number
   totalCount: number
   activePreset?: DatePreset | null
+  favoritesOnly?: boolean
+  favoritesLoading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,6 +22,7 @@ const emit = defineEmits<{
   'update:dateTo': [value: string]
   preset: [value: DatePreset]
   reset: []
+  'update:favoritesOnly': [value: boolean]
 }>()
 
 const PRESETS: { value: DatePreset; labelKey: string }[] = [
@@ -28,6 +31,15 @@ const PRESETS: { value: DatePreset; labelKey: string }[] = [
   { value: '30d', labelKey: 'filterSort.days30' },
   { value: 'all', labelKey: 'filterSort.all' },
 ]
+function favoriteChanged(event: Event) {
+  if (event.target instanceof HTMLInputElement) emit('update:favoritesOnly', event.target.checked)
+}
+function dateChanged(event: Event, boundary: 'from' | 'to') {
+  if (event.target instanceof HTMLInputElement) {
+    if (boundary === 'from') emit('update:dateFrom', event.target.value)
+    else emit('update:dateTo', event.target.value)
+  }
+}
 </script>
 
 <template>
@@ -54,16 +66,18 @@ const PRESETS: { value: DatePreset; labelKey: string }[] = [
     <div class="flex items-center gap-1.5">
       <input
         type="date"
+        :aria-label="t('filterSort.fromDate')"
         :value="dateFrom"
         class="rounded-md border border-border bg-panel-2 px-1.5 py-1 text-text"
-        @change="emit('update:dateFrom', ($event.target as HTMLInputElement).value)"
+        @change="dateChanged($event, 'from')"
       />
       <span class="text-text-dim">—</span>
       <input
         type="date"
+        :aria-label="t('filterSort.toDate')"
         :value="dateTo"
         class="rounded-md border border-border bg-panel-2 px-1.5 py-1 text-text"
-        @change="emit('update:dateTo', ($event.target as HTMLInputElement).value)"
+        @change="dateChanged($event, 'to')"
       />
     </div>
 
@@ -81,6 +95,11 @@ const PRESETS: { value: DatePreset; labelKey: string }[] = [
         {{ t(p.labelKey) }}
       </button>
     </div>
+
+    <label class="inline-flex min-h-9 items-center gap-2 text-text">
+      <input type="checkbox" :checked="favoritesOnly" :disabled="favoritesLoading" class="h-4 w-4 accent-accent1" @change="favoriteChanged" />
+      {{ t('trackFavorites.only') }}
+    </label>
 
     <div class="ml-auto flex items-center gap-2 text-text-dim">
       <span>{{ isFiltered ? t('filterSort.shownOf', { shown: visibleCount, total: totalCount }) : t('filterSort.total', { total: totalCount }) }}</span>

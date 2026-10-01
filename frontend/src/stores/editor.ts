@@ -5,6 +5,8 @@ import type { ChannelSettings, MasterSettings } from '../audio/mixerEngine'
 import { projectDuration } from '../audio/timelineTypes'
 import type { Clip, TimelineLane, TimelineProject } from '../audio/timelineTypes'
 import { i18n } from '../i18n'
+import { parseTimelineProject } from '../api/editorValidation'
+import { isObject } from '../api/schemaValidation'
 
 const t = i18n.global.t
 
@@ -48,7 +50,7 @@ export const useEditorStore = defineStore('editor', {
   state: () => ({
     projectId: null as number | null,
     projectName: t('storeErrors.newProject'),
-    project: emptyProject() as TimelineProject,
+    project: emptyProject(),
     playheadSec: 0,
     playing: false,
     selectedClipId: null as string | null,
@@ -114,9 +116,15 @@ export const useEditorStore = defineStore('editor', {
     restoreHistory(index: number) {
       if (!Number.isInteger(index) || index < 0 || index >= this.history.length) return
       const zoom = this.project.pxPerSecond
-      this.project = { ...JSON.parse(this.history[index]), pxPerSecond: zoom }
-      this.historyIndex = index
-      this.refreshDirty()
+      try {
+        const value: unknown = JSON.parse(this.history[index])
+        if (!isObject(value)) throw new TypeError('Invalid undo history')
+        this.project = parseTimelineProject({ ...value, pxPerSecond: zoom })
+        this.historyIndex = index
+        this.refreshDirty()
+      } catch {
+        this.error = t('storeErrors.historyRestoreFailed')
+      }
     },
     undo() {
       if (!this.canUndo) return

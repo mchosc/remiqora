@@ -13,6 +13,8 @@
 
 <p align="center">🚧 Actively in development — expect breaking changes, bugs, and rough edges. Not a stable release yet.</p>
 
+Video setup, the saved-project workflow, CPU testing and model limitations: [Video studio guide](docs/video-studio.md).
+
 <p align="center">
   <a href="https://remiqora.com/"><img alt="Website" src="https://img.shields.io/badge/website-remiqora.com-22d3ee?style=flat-square"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-in%20development-eab308?style=flat-square">
@@ -65,6 +67,7 @@ ACE-Step and YuE2 are two independent music generation engines, each with its ow
 | **LoRA training** | Dataset → auto-labeling → preprocessing → training → export — the whole ACE-Step fine-tuning pipeline for your own voice/style, in the browser. |
 | **Demucs** | Splits any track into 4 stems: vocals, drums, bass, other. |
 | **MuScriptor** | Transcribes audio (the full mix or a single stem) into MIDI notes. |
+| **Voice Clone** | Review singing samples, audition references and optional cleanup, build Seed-VC voices, and compare checkpoints on separately uploaded evaluation audio. See the [voice preparation guide](docs/voice-quality.md) for setup, workflow, and limitations. |
 | **Built-in DAW** | A multitrack timeline editor for assembling tracks/stems into a final mix: an effects rack on every channel, auto-BPM and time-stretch, WAV/MP3 export. |
 
 The interface is fully bilingual (Russian/English). It starts in your system language, and the switcher in the header overrides it.
@@ -77,7 +80,11 @@ The interface is fully bilingual (Russian/English). It starts in your system lan
 
 Two input modes: **“Simple”** — a single text description the model uses to infer both style and lyrics on its own; and **“Custom”** — style tags with autocomplete plus lyrics with structure markup (`[Verse]/[Chorus]/[Bridge]`) and performance annotations (`(whisper)`, `(falsetto)`), or an “Instrumental” checkbox.
 
-Attaching a reference track unlocks 5 remix scenarios:
+Use **Hide generator** to give the track list the full width, **Show generator** to restore the side card, or **Float generator** to open it above the list. Drag its title/header to move it, or focus the title and use arrow keys (Shift moves farther). Movement stays within the screen; **Dock generator** and **Hide generator** remain visible above the scrolling form. Escape inside it hides the panel after any open Help dialog is closed. Switching modes preserves the draft, selected file and floating position; only the panel mode is remembered after a page reload.
+
+Attaching a reference track unlocks these scenarios:
+
+- **Voice Replacement** — replace the singer with a ready cloned voice, keep a separate original upload and remix with the separated accompaniment. Uses Demucs/Seed-VC without generating a new song; see the [voice replacement guide](docs/voice-replacement.md) for limits and cancellation/retry behavior.
 - **Cover** — restyle while keeping the melody (tunable original-preservation strength).
 - **Repaint a section** — replace only a chosen part of the track.
 - **Extract a part** — pull one instrument/voice out of a finished mix (12 options: vocals, drums, bass, guitar, etc.).
@@ -85,6 +92,8 @@ Attaching a reference track unlocks 5 remix scenarios:
 - **Finish the composition** — the same, but for a whole list of parts at once.
 
 Plus: 10–300 s duration, batch of 1/2/4 variants, mp3/wav/flac formats, advanced parameters (BPM, key, time signature, vocal language, inference steps, guidance scale, seed), LoRA adapter support with adjustable strength, local presets, and a "Stop all" button for bulk job cancellation.
+
+The format selector uses the installed encoder's quality defaults; see [audio export quality](docs/audio-export-quality.md) for the verified settings and the separate WAV output used after applying a cloned voice.
 
 ## YuE2 and SheetSage2: generation
 
@@ -364,6 +373,12 @@ behavior, except the backend/frontend run as background jobs of the script
 itself (stop both with Ctrl+C) rather than in separate terminal windows.
 
 ---
+
+## Audio versions and Settings
+
+The header's **Settings** page configures MP3 CBR/VBR, WAV bit depth, FLAC compression, sample rate/channels and the Data folder. Defaults affect future exports; queued and completed files keep their captured settings.
+
+Saved track cards offer **Audio versions** for original/cloned playback and **Voices & exports** for additional cloned voices and MP3/WAV/FLAC downloads. Each voice uses the retained original, and earlier versions remain available. Older missing originals cannot be reconstructed. See [audio export quality](docs/audio-export-quality.md) for defaults, source-quality limits and recovery behavior.
 
 ## ⚙ Configuration (.env)
 

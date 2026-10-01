@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -31,6 +32,9 @@ from typing import Literal, Optional
 import httpx
 
 from . import db
+from .job_lifecycle import await_cleanup, cancel_and_wait, communicate_process, request_cancel, spawn_process
+
+logger = logging.getLogger(__name__)
 from .config import (
     FFMPEG_BIN_DIR,
     MODELS,
@@ -73,7 +77,7 @@ _gpu_lock = asyncio.Lock()
 class MidiJob:
     status: JobStatus
     error: Optional[str] = None
-    task: Optional[asyncio.Task] = field(default=None, repr=False)
+    task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
 _jobs: dict[tuple[int, str], MidiJob] = {}
@@ -105,18 +109,21 @@ async def _to_mono_wav(src: Path) -> Path:
     os.close(fd)
     env = os.environ.copy()
     env["PATH"] = f"{FFMPEG_BIN_DIR}{os.pathsep}{env.get('PATH', '')}"
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(src), "-ac", "1", "-ar", "44100", "-c:a", "pcm_s16le", out_path,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    try:
+        proc = await spawn_process(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(src), "-ac", "1", "-ar", "44100", "-c:a", "pcm_s16le", out_path,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        _, stderr = await communicate_process(proc)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed to convert audio to WAV: {stderr.decode('utf-8', 'replace').strip()[:500]}")
+        return Path(out_path)
+    except (Exception, asyncio.CancelledError):
         Path(out_path).unlink(missing_ok=True)
-        raise RuntimeError(f"ffmpeg failed to convert audio to WAV: {stderr.decode('utf-8', 'replace').strip()[:500]}")
-    return Path(out_path)
+        raise
 
 
 async def _ensure_model_loaded(base_url: str) -> None:
@@ -179,6 +186,10 @@ def any_active(track_id: int) -> bool:
     return any(is_active(track_id, s) for s in SOURCES)
 
 
+def work_busy() -> bool:
+    return any(job.status in ("queued", "running") for job in _jobs.values())
+
+
 def forget(track_id: int) -> None:
     for s in SOURCES:
         _jobs.pop((track_id, s), None)
@@ -200,8 +211,23 @@ async def start(track_id: int, source: str, *, force: bool = False) -> MidiJob:
 async def cancel(track_id: int, source: str) -> dict:
     job = _jobs.get((track_id, source))
     if job and job.status in ("queued", "running") and job.task is not None:
-        job.task.cancel()
+        try:
+            await cancel_and_wait(job.task)
+        finally:
+            if job.status in ("queued", "running"):
+                job.status = "cancelled"
+                job.error = None
     return status(track_id, source)
+
+
+async def shutdown() -> None:
+    """Drain local transcription/preprocessing tasks, then close HTTP transport."""
+    for job in _jobs.values():
+        request_cancel(job.task)
+    try:
+        await await_cleanup(asyncio.gather(*(cancel(track_id, source) for track_id, source in list(_jobs))))
+    finally:
+        await _client.aclose()
 
 
 async def _run(track_id: int, source: str) -> None:
@@ -268,11 +294,13 @@ async def _run(track_id: int, source: str) -> None:
         job.status = "cancelled"
         raise
     except httpx.HTTPStatusError as exc:
+        logger.exception("MIDI transcription server failed for track %s source %s", track_id, source)
         job.status = "failed"
-        job.error = f"{exc.response.status_code} from YuE2 server: {exc.response.text[:500]}"
-    except Exception as exc:  # noqa: BLE001 - any failure must surface to the UI
+        job.error = f"MIDI transcription server returned HTTP {exc.response.status_code}. Check the backend log."
+    except Exception:
+        logger.exception("MIDI transcription failed for track %s source %s", track_id, source)
         job.status = "failed"
-        job.error = str(exc)
+        job.error = "MIDI transcription failed. Check the backend log."
     finally:
         if wav_path is not None:
             wav_path.unlink(missing_ok=True)

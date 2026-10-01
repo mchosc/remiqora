@@ -46,6 +46,8 @@ const timelineScrollEl = ref<HTMLElement | null>(null)
 let rafId: number | null = null
 let playStartCtxTime = 0
 let playStartOffset = 0
+let playbackGeneration = 0
+let graphLaneCount: number | null = null
 
 function stopTicking(): void {
   if (rafId != null) cancelAnimationFrame(rafId)
@@ -85,14 +87,21 @@ function onEnded(): void {
 async function play(): Promise<void> {
   if (store.playing) return
   const from = store.playheadSec >= store.totalDuration ? 0 : store.playheadSec
+  store.playing = true
+  await resumePlayback(from)
+}
+
+async function resumePlayback(from: number): Promise<void> {
+  const generation = ++playbackGeneration
   playStartOffset = from
   playStartCtxTime = getSharedAudioCtx().currentTime
-  store.playing = true
   await engine.play(store.project, buffers.value, from, onEnded)
+  if (generation !== playbackGeneration || !store.playing) return
   startTicking()
 }
 
 function pause(): void {
+  playbackGeneration++
   engine.stop()
   store.playing = false
   stopTicking()
@@ -101,9 +110,7 @@ function pause(): void {
 function seek(value: number): void {
   store.playheadSec = value
   if (store.playing) {
-    playStartOffset = value
-    playStartCtxTime = getSharedAudioCtx().currentTime
-    void engine.play(store.project, buffers.value, value, onEnded)
+    void resumePlayback(value)
   }
 }
 
@@ -227,7 +234,8 @@ function zoomAroundPlayhead(factor: number): void {
 }
 
 function onRulerClick(evt: MouseEvent): void {
-  const rect = (evt.currentTarget as HTMLElement).getBoundingClientRect()
+  if (!(evt.currentTarget instanceof HTMLElement)) return
+  const rect = evt.currentTarget.getBoundingClientRect()
   const x = evt.clientX - rect.left
   seek(Math.max(0, x / store.project.pxPerSecond))
 }
@@ -369,6 +377,7 @@ async function load(): Promise<void> {
     if (token !== loadToken) return
     buffers.value = decoded
     engine.ensureGraph(store.project.lanes.length)
+    graphLaneCount = store.project.lanes.length
     engine.applySettings(store.project)
   } catch (e) {
     if (token === loadToken) store.error = e instanceof Error ? e.message : String(e)
@@ -378,16 +387,25 @@ async function load(): Promise<void> {
 }
 
 async function onDropAudio(laneId: string, payload: { file: File; timelineStart: number }): Promise<void> {
+  const currentLoad = loadToken
+  const project = store.project
+  const lane = project.lanes.find((entry) => entry.id === laneId)
+  if (!lane) return
+  const targetBuffers = buffers.value
+  const isCurrent = () => !unmounted && currentLoad === loadToken && store.project === project && project.lanes.includes(lane) && buffers.value === targetBuffers
   try {
     const uploaded = await tracksApi.uploadTrack(payload.file)
-    let buffer = buffers.value.get(uploaded.audio_url)
+    if (!isCurrent()) return
+    let buffer = targetBuffers.get(uploaded.audio_url)
     if (!buffer) {
       buffer = await decodeStem(uploaded.audio_url)
-      buffers.value.set(uploaded.audio_url, buffer)
+      if (!isCurrent()) return
+      targetBuffers.set(uploaded.audio_url, buffer)
     }
 
     // Auto-detect BPM
     const detectedBpm = await detectBpm(buffer)
+    if (!isCurrent()) return
 
     const clip: Clip = {
       id: crypto.randomUUID(),
@@ -404,10 +422,10 @@ async function onDropAudio(laneId: string, payload: { file: File; timelineStart:
     store.addClip(laneId, clip)
     
     if (isFirstClip) {
-      setTimeout(fitZoom, 50)
+      setTimeout(() => { if (isCurrent()) fitZoom() }, 50)
     }
   } catch (e) {
-    store.error = e instanceof Error ? e.message : String(e)
+    if (isCurrent()) store.error = e instanceof Error ? e.message : String(e)
   }
 }
 
@@ -431,7 +449,7 @@ function onToggleMute(laneId: string, payload: { clipId: string; enabled: boolea
   if (!clip) return
   clip.muted = payload.enabled
   store.snapshot()
-  if (store.playing) engine.play(store.project, buffers.value, store.playheadSec, () => { store.playing = false })
+  if (store.playing) void resumePlayback(store.playheadSec)
 }
 
 function onToggleSolo(laneId: string, payload: { clipId: string; enabled: boolean }): void {
@@ -441,7 +459,7 @@ function onToggleSolo(laneId: string, payload: { clipId: string; enabled: boolea
   if (!clip) return
   clip.solo = payload.enabled
   store.snapshot()
-  if (store.playing) engine.play(store.project, buffers.value, store.playheadSec, () => { store.playing = false })
+  if (store.playing) void resumePlayback(store.playheadSec)
 }
 
 watch(
@@ -455,34 +473,44 @@ watch(
   { immediate: true },
 )
 
+let projectWatchGeneration = 0
 watch(
   () => store.project,
   async () => {
-    engine.ensureGraph(store.project.lanes.length)
-    engine.applySettings(store.project)
+    const generation = ++projectWatchGeneration
+    const currentLoad = loadToken
+    const project = store.project
+    const targetBuffers = buffers.value
+    const countChanged = graphLaneCount !== null && graphLaneCount !== project.lanes.length
+    graphLaneCount = project.lanes.length
+    engine.ensureGraph(project.lanes.length)
+    engine.applySettings(project)
+    if (countChanged && store.playing) void resumePlayback(store.playheadSec)
     
-    for (const lane of store.project.lanes) {
+    for (const lane of project.lanes) {
       for (const clip of lane.clips) {
         if (!clip.sourceUrl) continue
         
-        if (!buffers.value.has(clip.sourceUrl)) {
+        if (!targetBuffers.has(clip.sourceUrl)) {
           try {
             const buf = await decodeStem(clip.sourceUrl)
-            buffers.value.set(clip.sourceUrl, buf)
+            if (generation !== projectWatchGeneration || currentLoad !== loadToken || targetBuffers !== buffers.value) return
+            targetBuffers.set(clip.sourceUrl, buf)
           } catch {}
         }
         
         if (clip.warpEnabled && clip.originalBpm) {
-          const bpm = store.project.bpm || 120
+          const bpm = project.bpm || 120
           if (clip.originalBpm !== bpm) {
             const key = `${clip.sourceUrl}_warp_${clip.originalBpm}_${bpm}`
-            if (!buffers.value.has(key)) {
-              const baseBuf = buffers.value.get(clip.sourceUrl)
+            if (!targetBuffers.has(key)) {
+              const baseBuf = targetBuffers.get(clip.sourceUrl)
               if (baseBuf) {
                 try {
                   const tempoFactor = bpm / clip.originalBpm
                   const stretched = await timeStretchBuffer(baseBuf, tempoFactor)
-                  buffers.value.set(key, stretched)
+                  if (generation !== projectWatchGeneration || currentLoad !== loadToken || targetBuffers !== buffers.value) return
+                  targetBuffers.set(key, stretched)
                 } catch (e) {
                   console.error('Stretch failed', e)
                 }
@@ -505,7 +533,7 @@ function onKeydown(e: KeyboardEvent) {
     return
   }
 
-  const tag = (e.target as HTMLElement)?.tagName?.toUpperCase()
+  const tag = e.target instanceof HTMLElement ? e.target.tagName.toUpperCase() : ''
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
   // Playhead and zoom. A focused clip handles its own arrow keys (nudge/trim)
@@ -650,7 +678,8 @@ let panScrollStartX = 0
 let panScrollStartY = 0
 
 function onTimelinePointerDown(e: PointerEvent) {
-  const target = e.target as HTMLElement
+  const target = e.target
+  if (!(target instanceof HTMLElement)) return
   const isInteractive = target.closest('button, input, select, canvas, .cursor-ew-resize, .track-header, .ruler')
   
   // Middle click (1), Shift+Left click, or Left click on empty background
@@ -715,6 +744,22 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
   }
 }
 
+function onProjectNameInput(event: Event): void {
+  if (event.target instanceof HTMLInputElement) store.setProjectName(event.target.value)
+}
+
+function onZoomInput(event: Event): void {
+  if (!(event.target instanceof HTMLInputElement)) return
+  const value = event.target.valueAsNumber
+  if (Number.isFinite(value)) store.setZoom(value)
+}
+
+function onBpmChange(event: Event): void {
+  if (!(event.target instanceof HTMLInputElement)) return
+  const value = event.target.valueAsNumber
+  if (Number.isFinite(value) && value >= 20 && value <= 999) store.setBpm(value)
+}
+
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('beforeunload', onBeforeUnload)
@@ -722,21 +767,24 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounted = true
+  loadToken++
+  projectWatchGeneration++
+  playbackGeneration++
+  store.playing = false
   stopTicking()
   engine.teardown()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('beforeunload', onBeforeUnload)
 })
 
-onBeforeRouteLeave((_to, _from, next) => {
+onBeforeRouteLeave(() => {
   if (store.dirty) {
     const confirmLeave = window.confirm(t('editor.confirmLeave'))
     if (!confirmLeave) {
-      next(false)
-      return
+      return false
     }
   }
-  next()
+  return true
 })
 </script>
 
@@ -749,7 +797,7 @@ onBeforeRouteLeave((_to, _from, next) => {
         <input
           :value="store.projectName"
           class="rounded-lg border border-border bg-panel-2 px-2 py-1 text-sm text-text"
-          @input="store.setProjectName(($event.target as HTMLInputElement).value)"
+          @input="onProjectNameInput"
         />
         <span v-if="store.dirty" class="text-xs font-bold text-accent" :title="t('editor.unsavedTitle')">●</span>
       </div>
@@ -836,7 +884,7 @@ onBeforeRouteLeave((_to, _from, next) => {
             min="10"
             max="200"
             :value="store.project.pxPerSecond"
-            @input="store.setZoom(Number(($event.target as HTMLInputElement).value))"
+            @input="onZoomInput"
           />
           <button type="button" class="px-1.5 py-0.5 rounded border border-border text-[10px] hover:bg-panel transition-colors active:scale-95" :title="t('editor.fitZoomTitle')" @click="fitZoom">{{ t('editor.fitZoom') }}</button>
         </label>
@@ -849,7 +897,7 @@ onBeforeRouteLeave((_to, _from, next) => {
             max="999"
             class="w-14 rounded border border-border bg-panel-2 px-1 py-0.5"
             :value="store.project.bpm || 120"
-            @change="store.setBpm(Number(($event.target as HTMLInputElement).value))"
+            @change="onBpmChange"
           />
         </label>
         

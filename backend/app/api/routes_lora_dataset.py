@@ -18,6 +18,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..config import ACE_STEP_DIR
 
+from ..client_contracts import UploadDatasetFilesResponse
+
 router = APIRouter(prefix="/api/lora-dataset", tags=["lora-dataset"])
 
 ALLOWED_AUDIO_EXT = {"wav", "mp3", "flac", "ogg", "opus"}
@@ -38,7 +40,7 @@ def _unique_dest(target_dir: Path, filename: str) -> Path:
     return dest
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=UploadDatasetFilesResponse)
 async def upload_dataset_files(
     dataset_name: str = Form(...),
     files: list[UploadFile] = File(...),

@@ -31,6 +31,7 @@ export function useTimelineEngine() {
   function ensureGraph(laneCount: number): TimelineGraph {
     const ctx = getSharedAudioCtx()
     if (!graph || graph.lanes.length !== laneCount) {
+      stop()
       if (graph) disconnectTimelineGraph(graph)
       graph = buildTimelineGraph(ctx, laneCount, getReverbImpulse(ctx.sampleRate))
     }
@@ -38,10 +39,11 @@ export function useTimelineEngine() {
   }
 
   function applySettings(project: TimelineProject): void {
-    if (!graph) return
+    const currentGraph = graph
+    if (!currentGraph) return
     const anySolo = project.lanes.some((l) => l.settings.solo)
-    project.lanes.forEach((lane, i) => applyLaneSettings(graph!, i, lane.settings, effectiveLaneGain(lane.settings, anySolo)))
-    applyMasterSettings(graph, project.master)
+    project.lanes.forEach((lane, i) => applyLaneSettings(currentGraph, i, lane.settings, effectiveLaneGain(lane.settings, anySolo)))
+    applyMasterSettings(currentGraph, project.master)
   }
 
   /**
@@ -89,7 +91,7 @@ export function useTimelineEngine() {
             fadeInDuration: clip.fadeInDuration,
             fadeOutDuration: clip.fadeOutDuration,
             stretchFactor,
-            instrument: clip.instrument as OscillatorType
+            instrument: clip.instrument
           })
           continue
         }
@@ -141,11 +143,11 @@ export function useTimelineEngine() {
   async function play(project: TimelineProject, buffers: Map<string, AudioBuffer>, fromSec: number, onEnded: () => void): Promise<void> {
     const g = ensureGraph(project.lanes.length)
     const token = ++seekToken
-    await (g.ctx as AudioContext).resume()
-    if (token !== seekToken || !graph) return // superseded by a newer play/seek, or torn down meanwhile
+    await getSharedAudioCtx().resume()
+    if (token !== seekToken || graph !== g) return // superseded, rebuilt, or torn down while awaiting resume
     playback?.stop()
     applySettings(project)
-    playback = scheduleTimeline(graph, toScheduledClips(project, buffers), fromSec, (graph.ctx as AudioContext).currentTime + 0.05, onEnded)
+    playback = scheduleTimeline(g, toScheduledClips(project, buffers), fromSec, g.ctx.currentTime + 0.05, onEnded)
   }
 
   function stop(): void {

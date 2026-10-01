@@ -1,36 +1,23 @@
 import { apiFetch, apiJson } from './http'
 import type { ModelId, OrchestratorStatus } from '../types'
 
-export interface Yue2ModelSpecConfig {
-  id: string
-  family: string
-  path: string
-  task: string
-  mode: string
-  model_spec_override?: string
-}
-
-export interface OrchestratorConfig {
-  yue2_specs: {
-    yue2: Yue2ModelSpecConfig
-    sheetsage2: Yue2ModelSpecConfig
-    muscriptor: Yue2ModelSpecConfig
-    [key: string]: Yue2ModelSpecConfig
-  }
-}
+import { parseOrchestratorConfigResponse, parseOrchestratorStatusResponse } from './contracts'
+import type { OrchestratorConfigResponse } from './contracts'
+export type { Yue2ModelSpecConfig } from './contracts'
+export type OrchestratorConfig = OrchestratorConfigResponse
 
 export function getConfig(): Promise<OrchestratorConfig> {
-  return apiFetch<OrchestratorConfig>('/api/orchestrator/config')
+  return apiFetch('/api/orchestrator/config', undefined, parseOrchestratorConfigResponse)
 }
 
-export function getStatus(): Promise<OrchestratorStatus> {
-  return apiFetch<OrchestratorStatus>('/api/orchestrator/status')
+export function getStatus(signal?: AbortSignal): Promise<OrchestratorStatus> {
+  return apiFetch('/api/orchestrator/status', { signal }, parseOrchestratorStatusResponse)
 }
 
 export function switchModel(model: ModelId): Promise<OrchestratorStatus> {
-  return apiJson<OrchestratorStatus>('/api/orchestrator/switch', { model })
+  return apiJson('/api/orchestrator/switch', { model }, 'POST', parseOrchestratorStatusResponse)
 }
 
 export function stopActive(): Promise<OrchestratorStatus> {
-  return apiJson<OrchestratorStatus>('/api/orchestrator/stop', {})
+  return apiJson('/api/orchestrator/stop', {}, 'POST', parseOrchestratorStatusResponse)
 }

@@ -1,5 +1,5 @@
 import { apiFetch, apiJson } from './http'
-import { unwrap, type Envelope } from './aceStep'
+import * as v from './nativeValidation'
 
 const BASE = '/api/ace'
 
@@ -120,7 +120,15 @@ export interface StartTrainingResponse {
   message: string
   tensor_dir: string
   output_dir: string
-  config: Record<string, unknown>
+  config: TrainingConfig
+}
+
+export interface TrainingConfig {
+  lora_rank?: number
+  lora_alpha?: number
+  learning_rate?: number
+  epochs?: number
+  train_epochs?: number
 }
 
 export interface TrainingStatus {
@@ -129,7 +137,7 @@ export interface TrainingStatus {
   current_step: number
   current_loss: number | null
   status: string
-  config: Record<string, unknown>
+  config: TrainingConfig
   tensor_dir: string
   loss_history: { step: number; loss: number }[]
   tensorboard_url: string | null
@@ -153,31 +161,115 @@ export interface ExportLoraResponse {
   source: string
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  return unwrap(await apiJson<Envelope<T> | T>(`${BASE}${path}`, body))
+export function parseDatasetSample(value: unknown): DatasetSample {
+  const row = v.record(value)
+  return {
+    index: v.number(row.index), filename: v.string(row.filename), audio_path: v.string(row.audio_path),
+    duration: v.number(row.duration), caption: v.string(row.caption), genre: v.string(row.genre),
+    prompt_override: row.prompt_override == null ? null : v.literal(row.prompt_override, ['caption', 'genre']),
+    lyrics: v.string(row.lyrics), bpm: v.nullableNumber(row.bpm), keyscale: v.string(row.keyscale),
+    timesignature: v.string(row.timesignature), language: v.string(row.language),
+    is_instrumental: v.boolean(row.is_instrumental), labeled: v.boolean(row.labeled),
+  }
 }
 
-async function get<T>(path: string): Promise<T> {
-  return unwrap(await apiFetch<Envelope<T> | T>(`${BASE}${path}`))
+function parseScan(value: unknown): ScanDatasetResponse {
+  const row = v.record(value)
+  return { message: v.string(row.message), num_samples: v.number(row.num_samples), samples: v.array(row.samples, parseDatasetSample) }
 }
 
-async function put<T>(path: string, body: unknown): Promise<T> {
-  return unwrap(await apiJson<Envelope<T> | T>(`${BASE}${path}`, body, 'PUT'))
+function parseMessage(value: unknown): { message: string } {
+  return { message: v.string(v.record(value).message) }
 }
 
-export const scanDataset = (req: ScanDatasetRequest) => post<ScanDatasetResponse>('/v1/dataset/scan', req)
-export const loadDataset = (dataset_path: string) => post<ScanDatasetResponse>('/v1/dataset/load', { dataset_path })
-export const saveDataset = (req: SaveDatasetRequest) => post<{ message: string }>('/v1/dataset/save', req)
-export const getSamples = () => get<{ samples: DatasetSample[] }>('/v1/dataset/samples')
-export const updateSample = (idx: number, req: UpdateSampleRequest) => put<DatasetSample>(`/v1/dataset/sample/${idx}`, req)
+function parseStarted(value: unknown): AsyncTaskStarted {
+  const row = v.record(value)
+  return { task_id: v.string(row.task_id), message: v.string(row.message), total: v.number(row.total) }
+}
 
-export const startAutoLabel = (req: AutoLabelRequest) => post<AsyncTaskStarted>('/v1/dataset/auto_label_async', req)
-export const autoLabelStatus = (taskId: string) => get<AutoLabelStatus>(`/v1/dataset/auto_label_status/${taskId}`)
+function optional<T>(value: unknown, parse: (item: unknown) => T): T | undefined {
+  return value == null ? undefined : parse(value)
+}
 
-export const startPreprocess = (req: PreprocessRequest) => post<AsyncTaskStarted>('/v1/dataset/preprocess_async', req)
-export const preprocessStatus = (taskId: string) => get<PreprocessStatus>(`/v1/dataset/preprocess_status/${taskId}`)
+function parseConfig(value: unknown): TrainingConfig {
+  const row = v.record(value)
+  return {
+    lora_rank: optional(row.lora_rank, v.number), lora_alpha: optional(row.lora_alpha, v.number),
+    learning_rate: optional(row.learning_rate, v.number), epochs: optional(row.epochs, v.number), train_epochs: optional(row.train_epochs, v.number),
+  }
+}
 
-export const startLoraTraining = (req: StartLoraTrainingRequest) => post<StartTrainingResponse>('/v1/training/start', req)
-export const trainingStatus = () => get<TrainingStatus>('/v1/training/status')
-export const stopTraining = () => post<{ message: string }>('/v1/training/stop', {})
-export const exportLora = (req: ExportLoraRequest) => post<ExportLoraResponse>('/v1/training/export', req)
+function parseAutoLabel(value: unknown): AutoLabelStatus {
+  const row = v.record(value)
+  return {
+    task_id: v.string(row.task_id), status: v.literal(row.status, ['running', 'completed', 'failed']),
+    progress: v.string(row.progress), current: v.number(row.current), total: v.number(row.total),
+    save_path: optional(row.save_path, v.string), last_updated_index: optional(row.last_updated_index, v.number),
+    last_updated_sample: optional(row.last_updated_sample, (value) => {
+      const sample = v.record(value)
+      return parseDatasetSample({ ...sample, index: sample.index ?? row.last_updated_index })
+    }), error: optional(row.error, v.string),
+    result: optional(row.result, (value) => {
+      const result = v.record(value)
+      return { message: v.string(result.message), labeled_count: v.number(result.labeled_count), samples: v.array(result.samples, parseDatasetSample) }
+    }),
+  }
+}
+
+function parsePreprocess(value: unknown): PreprocessStatus {
+  const row = v.record(value)
+  return {
+    task_id: v.string(row.task_id), status: v.literal(row.status, ['running', 'completed', 'failed']),
+    progress: v.string(row.progress), current: v.number(row.current), total: v.number(row.total),
+    error: optional(row.error, v.string), result: optional(row.result, (value) => {
+      const result = v.record(value)
+      return { message: v.string(result.message), output_dir: v.string(result.output_dir), num_tensors: v.number(result.num_tensors) }
+    }),
+  }
+}
+
+export function parseTrainingStatus(value: unknown): TrainingStatus {
+  const row = v.record(value)
+  return {
+    is_training: v.boolean(row.is_training), should_stop: v.boolean(row.should_stop), current_step: v.number(row.current_step),
+    current_loss: v.nullableNumber(row.current_loss), status: v.string(row.status), config: parseConfig(row.config), tensor_dir: v.string(row.tensor_dir),
+    loss_history: v.array(row.loss_history, (value) => { const loss = v.record(value); return { step: v.number(loss.step), loss: v.number(loss.loss) } }),
+    tensorboard_url: v.nullableString(row.tensorboard_url), tensorboard_logdir: v.nullableString(row.tensorboard_logdir),
+    training_log: v.string(row.training_log), start_time: v.nullableNumber(row.start_time), current_epoch: v.number(row.current_epoch),
+    steps_per_second: v.number(row.steps_per_second), estimated_time_remaining: v.number(row.estimated_time_remaining), error: v.nullableString(row.error),
+  }
+}
+
+async function post<T>(path: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
+  return parse(v.nativePayload(await apiJson(`${BASE}${path}`, body)))
+}
+
+async function get<T>(path: string, parse: (value: unknown) => T, signal?: AbortSignal): Promise<T> {
+  return parse(v.nativePayload(await apiFetch(`${BASE}${path}`, { signal })))
+}
+
+export const scanDataset = (req: ScanDatasetRequest) => post('/v1/dataset/scan', req, parseScan)
+export const loadDataset = (dataset_path: string) => post('/v1/dataset/load', { dataset_path }, parseScan)
+export const saveDataset = (req: SaveDatasetRequest) => post('/v1/dataset/save', req, parseMessage)
+export const getSamples = () => get('/v1/dataset/samples', (value) => ({ samples: v.array(v.record(value).samples, parseDatasetSample) }))
+export const updateSample = async (idx: number, req: UpdateSampleRequest): Promise<DatasetSample> => {
+  const row = v.record(v.nativePayload(await apiJson(`${BASE}/v1/dataset/sample/${idx}`, { ...req, sample_idx: idx }, 'PUT')))
+  return parseDatasetSample(row.sample)
+}
+
+export const startAutoLabel = (req: AutoLabelRequest) => post('/v1/dataset/auto_label_async', req, parseStarted)
+export const autoLabelStatus = (taskId: string, signal?: AbortSignal) => get(`/v1/dataset/auto_label_status/${encodeURIComponent(taskId)}`, parseAutoLabel, signal)
+
+export const startPreprocess = (req: PreprocessRequest) => post('/v1/dataset/preprocess_async', req, parseStarted)
+export const preprocessStatus = (taskId: string, signal?: AbortSignal) => get(`/v1/dataset/preprocess_status/${encodeURIComponent(taskId)}`, parsePreprocess, signal)
+
+export const startLoraTraining = (req: StartLoraTrainingRequest) => post('/v1/training/start', req, (value): StartTrainingResponse => {
+  const row = v.record(value)
+  return { message: v.string(row.message), tensor_dir: v.string(row.tensor_dir), output_dir: v.string(row.output_dir), config: parseConfig(row.config) }
+})
+export const trainingStatus = (signal?: AbortSignal) => get('/v1/training/status', parseTrainingStatus, signal)
+export const stopTraining = () => post('/v1/training/stop', {}, parseMessage)
+export const exportLora = (req: ExportLoraRequest) => post('/v1/training/export', req, (value): ExportLoraResponse => {
+  const row = v.record(value)
+  return { message: v.string(row.message), export_path: v.string(row.export_path), source: v.string(row.source) }
+})

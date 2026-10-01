@@ -17,6 +17,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .data_root import resolve_data_dir
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Privacy: the libraries under the model servers (huggingface_hub and friends) may send anonymous usage pings.
@@ -73,6 +75,12 @@ YUE2_DIR = _env_path("YUE2_DIR", r"E:\AI\YuE2-3B")
 # Separate uv-managed venv for Demucs (stem separation) - not a "model" in
 # MODELS below since it's a one-shot CLI job, not a persistent HTTP server.
 DEMUCS_DIR = _env_path("DEMUCS_DIR", r"E:\AI\Demucs")
+# Singing-voice converter (Seed-VC). setup_voice.sh clones it here. Voice
+# Clone shells out to this checkout's own venv so it does not share the API env.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+SEED_VC_DIR = _env_path("SEED_VC_DIR", str(_REPO_ROOT / "external" / "seed-vc"))
+# Apple Silicon video engine (LTX-2.3 via the MLX port). setup_video.sh clones it here.
+LTX_DIR = _env_path("LTX_DIR", str(_REPO_ROOT / "external" / "ltx-2-mlx"))
 
 # MuScriptor (audio -> MIDI) is loaded into YuE2's own audiocpp_server rather
 # than being launched separately, so it gets no MODELS entry - only the spec
@@ -230,14 +238,15 @@ MODELS: dict[str, ModelDefinition] = {
     ),
 }
 
-# The desktop app (desktop/) points these two at the user's profile because its
-# install directory is read-only; a source checkout keeps the defaults next to
-# the backend.
-LOG_DIR = _env_path("REMIQORA_LOG_DIR", str(Path(__file__).resolve().parent.parent / "logs"))
+# Shared storage for songs, voices, videos, models, logs, and the catalog.
+# A folder chosen in the app overrides REMIQORA_DATA_DIR on the next start.
+# The desktop app points REMIQORA_LOG_DIR at its own logs folder. A source
+# checkout keeps logs inside the data folder.
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = resolve_data_dir(_env_path("REMIQORA_DATA_DIR", str(_DEFAULT_DATA_DIR)))
+_LEGACY_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DIR = _env_path("REMIQORA_LOG_DIR", str(DATA_DIR / "logs"))
 LOG_TAIL_LINES = 40
-
-# Shared track storage: one SQLite DB + files split into a subfolder per model.
-DATA_DIR = _env_path("REMIQORA_DATA_DIR", str(Path(__file__).resolve().parent.parent / "data"))
 
 # Directory containing the built frontend (frontend/dist). Only used when it
 # exists; in dev the Vite dev server is used instead and this is ignored.

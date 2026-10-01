@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { useOrchestratorStore } from '../../stores/orchestrator'
@@ -10,6 +11,19 @@ const orchestrator = useOrchestratorStore()
 const route = useRoute()
 const { selectModel } = useModelSwitch()
 const { t } = useI18n()
+const headerElement = ref<HTMLElement | null>(null)
+let headerObserver: ResizeObserver | undefined
+function measureHeader() {
+  const element = headerElement.value
+  const height = element && window.getComputedStyle(element).position === 'sticky' ? element.getBoundingClientRect().height : 0
+  document.documentElement.style.setProperty('--app-header-height', `${height}px`)
+}
+onMounted(() => {
+  measureHeader()
+  if (typeof ResizeObserver !== 'undefined' && headerElement.value) { headerObserver = new ResizeObserver(measureHeader); headerObserver.observe(headerElement.value) }
+  window.addEventListener('resize', measureHeader)
+})
+onBeforeUnmount(() => { headerObserver?.disconnect(); window.removeEventListener('resize', measureHeader); document.documentElement.style.removeProperty('--app-header-height') })
 
 const LOCALES: { code: LocaleCode; label: string }[] = [
   { code: 'ru', label: 'Русский' },
@@ -17,7 +31,10 @@ const LOCALES: { code: LocaleCode; label: string }[] = [
 ]
 
 function onLocaleChange(e: Event) {
-  setLocale((e.target as HTMLSelectElement).value as LocaleCode)
+  if (!(e.target instanceof HTMLSelectElement)) return
+  const value = e.target.value
+  const choice = LOCALES.find((locale) => locale.code === value)
+  if (choice) setLocale(choice.code)
 }
 
 const MODEL_IDS: ModelId[] = ['ace_step', 'yue2']
@@ -52,7 +69,7 @@ async function onSelect(id: ModelId) {
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 border-b border-border bg-bg/90 backdrop-blur">
+  <header ref="headerElement" class="top-0 z-40 border-b border-border bg-bg/90 backdrop-blur sm:sticky">
     <div class="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
       <router-link to="/" class="flex items-center gap-2 text-text">
         <span class="accent-gradient flex h-6 w-6 shrink-0 items-center justify-center rounded-md">
@@ -68,11 +85,32 @@ async function onSelect(id: ModelId) {
 
       <nav class="ml-auto flex flex-wrap gap-2">
         <router-link
+          to="/settings"
+          class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors"
+          :class="route.path.startsWith('/settings') ? 'border-accent1/60 bg-panel text-text' : 'border-border bg-panel-2 text-text-dim hover:text-text'"
+        >
+          {{ t('header.settings') }}
+        </router-link>
+        <router-link
           to="/editor"
           class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors"
           :class="route.path.startsWith('/editor') ? 'border-accent1/60 bg-panel text-text' : 'border-border bg-panel-2 text-text-dim hover:text-text'"
         >
           {{ t('header.editor') }}
+        </router-link>
+        <router-link
+          to="/voice-clone"
+          class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors"
+          :class="route.path.startsWith('/voice-clone') ? 'border-accent1/60 bg-panel text-text' : 'border-border bg-panel-2 text-text-dim hover:text-text'"
+        >
+          {{ t('header.voiceClone') }}
+        </router-link>
+        <router-link
+          to="/video"
+          class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors"
+          :class="route.path.startsWith('/video') ? 'border-accent1/60 bg-panel text-text' : 'border-border bg-panel-2 text-text-dim hover:text-text'"
+        >
+          {{ t('header.video') }}
         </router-link>
         <router-link
           v-if="statusOf('ace_step') === 'running'"
@@ -95,6 +133,7 @@ async function onSelect(id: ModelId) {
           <span class="text-xs text-text-dim">{{ t(STATUS_LABEL_KEYS[statusOf(id)]) }}</span>
         </button>
         <select
+          :aria-label="t('common.language')"
           class="rounded-lg border border-border bg-panel-2 px-2 py-2 text-sm text-text"
           :value="currentLocale()"
           @change="onLocaleChange"

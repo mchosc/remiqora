@@ -11,7 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update-notes': [notes: MidiNote[]]
-  'update-instrument': [instrument: 'sawtooth' | 'square' | 'sine' | 'triangle']
+  'update-instrument': [instrument: NonNullable<Clip['instrument']>]
 }>()
 
 const store = useEditorStore()
@@ -41,11 +41,25 @@ const gridWidth = computed(() => Math.max(800, durationBeats.value * PIXELS_PER_
 
 // Sync local notes when clip notes change from outside (e.g. undo/redo)
 watch(() => props.clip.notes, (newNotes) => {
-  localNotes.value = JSON.parse(JSON.stringify(newNotes || []))
+  localNotes.value = (newNotes ?? []).map((note) => ({ ...note }))
 }, { immediate: true, deep: true })
 
 function commitNotes() {
-  emit('update-notes', JSON.parse(JSON.stringify(localNotes.value)))
+  emit('update-notes', localNotes.value.map((note) => ({ ...note })))
+}
+
+function onInstrumentChange(event: Event): void {
+  if (!(event.target instanceof HTMLSelectElement)) return
+  const value = event.target.value
+  if (value === 'sawtooth' || value === 'square' || value === 'sine' || value === 'triangle') {
+    emit('update-instrument', value)
+  }
+}
+
+function onScroll(event: Event): void {
+  if (!(event.target instanceof HTMLElement)) return
+  scrollY.value = event.target.scrollTop
+  scrollX.value = event.target.scrollLeft
 }
 
 function getNoteName(noteNumber: number) {
@@ -68,8 +82,8 @@ let dragStartBeat = 0
 let dragStartDuration = 0
 
 function onGridDoubleClick(evt: MouseEvent) {
-  if (evt.target !== container.value?.querySelector('.grid-bg')) return
-  const rect = (evt.target as HTMLElement).getBoundingClientRect()
+  if (!(evt.target instanceof HTMLElement) || evt.target !== container.value?.querySelector('.grid-bg')) return
+  const rect = evt.target.getBoundingClientRect()
   const x = evt.clientX - rect.left
   const y = evt.clientY - rect.top
 
@@ -176,7 +190,7 @@ function onPasteAbc() {
         <span class="text-xs font-semibold">{{ clip.sourceLabel || 'MIDI Clip' }}</span>
         <select 
           :value="clip.instrument || 'sawtooth'" 
-          @change="emit('update-instrument', ($event.target as HTMLSelectElement).value as any)"
+          @change="onInstrumentChange"
           class="ml-3 rounded border border-border bg-panel-2 px-2 py-0.5 text-xs text-text outline-none"
         >
           <option value="sawtooth">Sawtooth</option>
@@ -220,7 +234,7 @@ function onPasteAbc() {
       <div 
         ref="container"
         class="flex-1 overflow-auto relative bg-[#161922]"
-        @scroll="scrollY = ($event.target as HTMLElement).scrollTop; scrollX = ($event.target as HTMLElement).scrollLeft"
+        @scroll="onScroll"
       >
         <div 
           class="grid-bg absolute top-0 left-0"

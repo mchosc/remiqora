@@ -1,22 +1,8 @@
 import { apiFetch, apiJson } from './http'
 import type { TrackOrigin } from '../types'
-
-export interface SavedTrack {
-  id: number
-  model: TrackOrigin
-  created_at: string
-  title: string
-  lyrics: string
-  seed: number | null
-  duration_ms: number | null
-  wall_ms: number | null
-  params: Record<string, unknown>
-  filename: string
-  audio_url: string
-  abc_url: string | null
-  stems: Record<string, string> | null
-  midi: Record<string, string> | null
-}
+import { parseSavedTrack, parseSetTrackFavoriteRequest, parseTracksResponse } from './contracts'
+import type { SavedTrack, JsonObject } from './contracts'
+export type { SavedTrack } from './contracts'
 
 export interface SaveTrackMeta {
   model: TrackOrigin
@@ -25,7 +11,7 @@ export interface SaveTrackMeta {
   seed?: number
   duration_ms?: number
   wall_ms?: number
-  params?: Record<string, unknown>
+  params?: JsonObject
 }
 
 export async function saveTrack(meta: SaveTrackMeta, audio: Blob, audioExt: string, abcText?: string | null): Promise<SavedTrack> {
@@ -39,28 +25,42 @@ export async function saveTrack(meta: SaveTrackMeta, audio: Blob, audioExt: stri
   form.append('params', JSON.stringify(meta.params || {}))
   if (abcText) form.append('abc', abcText)
   form.append('audio', audio, `track.${audioExt}`)
-  return apiFetch<SavedTrack>('/api/tracks', { method: 'POST', body: form })
+  return apiFetch('/api/tracks', { method: 'POST', body: form }, parseSavedTrack)
 }
 
 export async function uploadTrack(file: File, title?: string): Promise<SavedTrack> {
   const form = new FormData()
   form.append('audio', file)
   if (title) form.append('title', title)
-  return apiFetch<SavedTrack>('/api/tracks/upload', { method: 'POST', body: form })
+  return apiFetch('/api/tracks/upload', { method: 'POST', body: form }, parseSavedTrack)
 }
 
-export async function listTracks(model?: TrackOrigin): Promise<SavedTrack[]> {
+export async function listTracks(model?: TrackOrigin, signal?: AbortSignal): Promise<SavedTrack[]> {
   const qs = model ? `?model=${encodeURIComponent(model)}` : ''
-  const json = await apiFetch<{ data: SavedTrack[] }>(`/api/tracks${qs}`)
+  const json = await apiFetch(`/api/tracks${qs}`, { signal }, parseTracksResponse)
   return json.data
 }
 
-export function renameTrack(id: number, title: string): Promise<SavedTrack> {
-  return apiJson<SavedTrack>(`/api/tracks/${id}`, { title }, 'PUT')
+export async function renameTrack(id: number, title: string): Promise<SavedTrack> {
+  return apiJson(`/api/tracks/${id}`, { title }, 'PUT', parseSavedTrack)
+}
+
+
+export async function setTrackFavorite(trackId: number, isFavorite: boolean, signal?: AbortSignal): Promise<SavedTrack> {
+  if (!Number.isSafeInteger(trackId) || trackId < 1) throw new Error('Invalid track ID')
+  const body = parseSetTrackFavoriteRequest({ is_favorite: isFavorite })
+  return apiFetch(`/api/tracks/${trackId}/favorite`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal,
+  }, parseSavedTrack)
 }
 
 export async function deleteTrack(id: number): Promise<void> {
   await apiFetch(`/api/tracks/${id}`, { method: 'DELETE' })
+}
+
+export function formatTrackCodes(codes: Array<number | null | undefined>): string {
+  return codes.filter((code): code is number => typeof code === 'number' && code > 0).join(', ')
 }
 
 export function trackAudioUrl(id: number): string {

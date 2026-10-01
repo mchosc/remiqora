@@ -1,28 +1,22 @@
 import { apiFetch } from './http'
 
-export type MidiSource = 'full' | 'vocals' | 'drums' | 'bass' | 'other'
+import { parseMidiStatusResponse } from './contracts'
+import type { MidiStatusResponse } from './contracts'
 
-export interface MidiSourceState {
-  status: 'idle' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
-  error: string | null
-}
+export type MidiSource = MidiStatusResponse['available'][number]
+export type MidiSourceState = MidiStatusResponse['sources']['full']
+export type MidiStatus = MidiStatusResponse
 
-export interface MidiStatus {
-  sources: Record<MidiSource, MidiSourceState>
-  urls: Partial<Record<MidiSource, string>>
-  available: MidiSource[]
-}
-
-export function getMidiStatus(trackId: number): Promise<MidiStatus> {
-  return apiFetch<MidiStatus>(`/api/tracks/${trackId}/midi/status`)
+export function getMidiStatus(trackId: number, signal?: AbortSignal): Promise<MidiStatus> {
+  return apiFetch(`/api/tracks/${trackId}/midi/status`, { signal }, parseMidiStatusResponse)
 }
 
 export function startTranscription(trackId: number, source: MidiSource, force = false): Promise<MidiStatus> {
-  return apiFetch<MidiStatus>(`/api/tracks/${trackId}/midi/${source}?force=${force}`, { method: 'POST' })
+  return apiFetch(`/api/tracks/${trackId}/midi/${source}?force=${force}`, { method: 'POST' }, parseMidiStatusResponse)
 }
 
 export function cancelTranscription(trackId: number, source: MidiSource): Promise<MidiStatus> {
-  return apiFetch<MidiStatus>(`/api/tracks/${trackId}/midi/${source}/cancel`, { method: 'POST' })
+  return apiFetch(`/api/tracks/${trackId}/midi/${source}/cancel`, { method: 'POST' }, parseMidiStatusResponse)
 }
 
 export async function deleteMidi(trackId: number): Promise<void> {

@@ -64,9 +64,11 @@ export async function timeStretchBuffer(
 
   const outFramesCount = st.outputBuffer.frameCount
   const finalInterleaved = new Float32Array(outFramesCount * ST_CHANNELS)
-  // receiveSamples exists on the FIFO implementation but is missing from the package's typings.
-  ;(st.outputBuffer as unknown as { receiveSamples(out: Float32Array, frames: number): void })
-    .receiveSamples(finalInterleaved, outFramesCount)
+  // Use the common SampleBuffer contract: extract copies, receive consumes.
+  // FifoSampleBuffer.receiveSamples performs these same steps, but is absent
+  // from the common interface returned by SoundTouch.outputBuffer.
+  st.outputBuffer.extract(finalInterleaved, 0, outFramesCount)
+  st.outputBuffer.receive(outFramesCount)
 
   // We only take the exact stretchedLength frames
   const outLength = Math.max(1, Math.min(stretchedLength, outFramesCount))

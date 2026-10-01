@@ -6,13 +6,18 @@ so both frontends can be written against a single same-origin API surface.
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ..config import MODELS
 from ..orchestrator.manager import manager
 from ..orchestrator.state import ModelStatus
+from .. import video_jobs
+from ..resource_admission import NativeLease, ResourceBusyError, reserve_native
 
 router = APIRouter(prefix="/api")
 
@@ -23,9 +28,10 @@ _HOP_BY_HOP = {
 }
 
 _client = httpx.AsyncClient(timeout=None)
+logger = logging.getLogger(__name__)
 
 
-async def _proxy_to(base_url: str, request: Request, path: str) -> Response:
+async def _proxy_to(base_url: str, request: Request, path: str, lease: NativeLease | None = None) -> Response:
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
     body = await request.body()
     url = httpx.URL(f"{base_url}/{path}", params=list(request.query_params.multi_items()))
@@ -39,12 +45,16 @@ async def _proxy_to(base_url: str, request: Request, path: str) -> Response:
     upstream = await _client.send(req, stream=True)
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_BY_HOP}
 
-    async def body_stream():
+    async def body_stream() -> AsyncIterator[bytes]:
         try:
             async for chunk in upstream.aiter_bytes():
                 yield chunk
         finally:
-            await upstream.aclose()
+            try:
+                await upstream.aclose()
+            finally:
+                if lease:
+                    await lease.release()
 
     return StreamingResponse(
         body_stream(),
@@ -54,15 +64,48 @@ async def _proxy_to(base_url: str, request: Request, path: str) -> Response:
     )
 
 
-def _make_proxy_route(model_id: str):
-    async def _route(request: Request, path: str = ""):
+def _accelerator_mutation(model_id: str, path: str, method: str) -> bool:
+    if method.upper() not in {'POST', 'PUT', 'PATCH'}:
+        return False
+    endpoint = path.strip('/')
+    if model_id == 'ace_step':
+        return endpoint in {'release_task', 'v1/init', 'v1/training/start', 'v1/dataset/auto_label_async',
+            'v1/dataset/preprocess_async', 'v1/lora/load', 'v1/lora/toggle', 'v1/lora/scale'}
+    return model_id == 'yue2' and endpoint in {'v1/tasks/run', 'v1/models/load'}
+
+
+def _make_proxy_route(model_id: str) -> Callable[..., Awaitable[Response]]:
+    async def _route(request: Request, path: str = "") -> Response:
         rs = manager.state.models[model_id]
         if rs.status != ModelStatus.RUNNING:
             return JSONResponse({"error": f"model '{model_id}' is not active"}, status_code=503)
+        lease: NativeLease | None = None
         try:
-            return await _proxy_to(MODELS[model_id].proxy_target, request, path)
-        except httpx.HTTPError as exc:
-            return JSONResponse({"error": f"upstream request failed: {exc}"}, status_code=502)
+            if _accelerator_mutation(model_id, path, request.method):
+                lease = await reserve_native(video_jobs.work_busy)
+            response = await _proxy_to(MODELS[model_id].proxy_target, request, path, lease)
+            if lease:
+                previous = response.background
+                async def cleanup() -> None:
+                    try:
+                        if previous:
+                            await previous()
+                    finally:
+                        if lease:
+                            await lease.release()
+                response.background = BackgroundTask(cleanup)
+            return response
+        except ResourceBusyError:
+            return JSONResponse({'error': 'video_work_busy'}, status_code=409)
+        except httpx.HTTPError:
+            logger.exception('Native model proxy failed')
+            if lease:
+                await lease.release()
+            return JSONResponse({'error': 'upstream_request_failed'}, status_code=502)
+        except BaseException:
+            if lease:
+                await lease.release()
+            raise
 
     return _route
 

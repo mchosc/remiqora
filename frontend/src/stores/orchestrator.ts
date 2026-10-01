@@ -1,9 +1,11 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import * as api from '../api/orchestrator'
 import type { ModelId, ModelRuntimeStatus, OrchestratorStatus } from '../types'
+import { createPollingLoop, type PollContext, type PollingLoop } from '../composables/polling'
 
 const FAST_POLL_MS = 1500
 const SLOW_POLL_MS = 8000
+const loops = new WeakMap<object, PollingLoop>()
 
 interface StatusEntry {
   id: ModelId
@@ -18,7 +20,6 @@ export const useOrchestratorStore = defineStore('orchestrator', {
     statuses: {} as Record<string, StatusEntry>,
     switching: false,
     switchError: null as string | null,
-    _timer: null as ReturnType<typeof setTimeout> | null,
   }),
   getters: {
     isBusy(state): boolean {
@@ -30,25 +31,24 @@ export const useOrchestratorStore = defineStore('orchestrator', {
       this.activeModel = snapshot.active_model
       this.statuses = snapshot.models
     },
-    async refresh() {
+    async refresh(context?: PollContext) {
       try {
-        this._applySnapshot(await api.getStatus())
+        const snapshot = await api.getStatus(context?.signal)
+        if (!context || context.isCurrent()) this._applySnapshot(snapshot)
       } catch {
         // Transient network hiccup (e.g. backend restarting) - next poll retries.
       }
     },
     startPolling() {
-      if (this._timer) return
-      const tick = async () => {
-        await this.refresh()
-        const delay = this.isBusy ? FAST_POLL_MS : SLOW_POLL_MS
-        this._timer = setTimeout(tick, delay)
+      let loop = loops.get(this)
+      if (!loop) {
+        loop = createPollingLoop((context) => this.refresh(context), () => this.isBusy ? FAST_POLL_MS : SLOW_POLL_MS)
+        loops.set(this, loop)
       }
-      void tick()
+      loop.start()
     },
     stopPolling() {
-      if (this._timer) clearTimeout(this._timer)
-      this._timer = null
+      loops.get(this)?.stop()
     },
     async switchModel(model: ModelId) {
       this.switching = true

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { claimPlayback, releasePlaybackIfCurrent } from '../../composables/audioPlayback'
 import PlayIcon from './icons/PlayIcon.vue'
@@ -15,9 +15,14 @@ const props = defineProps<{
 
 const activeIndex = ref(0)
 const playing = ref(false)
+const starting = ref(false)
+const playbackFailed = ref(false)
 const currentTime = ref(0)
 const duration = ref(props.durationSec || 0)
 const audioEls = ref<(HTMLAudioElement | null)[]>([])
+let mounted = true
+let generation = 0
+let playRequested = false
 
 const currentSrc = computed(() => props.sources[activeIndex.value] || '')
 
@@ -32,71 +37,128 @@ function getAudio(index: number): HTMLAudioElement | null {
   return audioEls.value[index] ?? null
 }
 
-function onLoadedMetadata(index: number) {
-  const el = getAudio(index)
-  if (el && el.duration && (!duration.value || index === activeIndex.value)) {
+function setAudioElement(index: number, el: Element | ComponentPublicInstance | null): void {
+  audioEls.value[index] = el instanceof HTMLAudioElement ? el : null
+}
+
+function eventAudio(index: number, event: Event): HTMLAudioElement | null {
+  const el = event.currentTarget
+  return el instanceof HTMLAudioElement && el === getAudio(index) ? el : null
+}
+
+function stopState(): void {
+  generation++
+  playRequested = false
+  playing.value = false
+  starting.value = false
+}
+
+function onLoadedMetadata(index: number, event: Event): void {
+  const el = eventAudio(index, event)
+  if (el && Number.isFinite(el.duration) && el.duration > 0 && (!duration.value || index === activeIndex.value)) {
     duration.value = el.duration
   }
 }
 
-function onTimeUpdate(index: number) {
+function onTimeUpdate(index: number, event: Event): void {
   if (index === activeIndex.value) {
-    const el = getAudio(index)
+    const el = eventAudio(index, event)
     if (el) currentTime.value = el.currentTime
   }
 }
 
-function onEnded() {
-  playing.value = false
-  currentTime.value = 0
-  const el = getAudio(activeIndex.value)
-  if (el) releasePlaybackIfCurrent(el)
+function onPlay(index: number, event: Event): void {
+  const el = eventAudio(index, event)
+  if (!el) return
+  if (!mounted || index !== activeIndex.value || !playRequested) {
+    el.pause()
+    releasePlaybackIfCurrent(el)
+    return
+  }
+  playing.value = true
 }
 
-function togglePlay() {
-  const el = getAudio(activeIndex.value)
+function onPause(index: number, event: Event): void {
+  const el = eventAudio(index, event)
+  if (!el || !el.paused) return
+  if (index === activeIndex.value) stopState()
+  releasePlaybackIfCurrent(el)
+}
+
+function onEnded(index: number, event: Event): void {
+  const el = eventAudio(index, event)
   if (!el) return
-  if (playing.value) {
-    el.pause()
-    playing.value = false
+  if (index === activeIndex.value) {
+    stopState()
+    currentTime.value = el.currentTime
+  }
+  releasePlaybackIfCurrent(el)
+}
+
+async function startAudio(index: number): Promise<void> {
+  const el = getAudio(index), source = props.sources[index]
+  if (!mounted || !el || !source || index !== activeIndex.value) return
+  const requestGeneration = ++generation
+  const isCurrent = () => mounted && generation === requestGeneration && index === activeIndex.value && getAudio(index) === el && props.sources[index] === source
+  playRequested = true
+  playbackFailed.value = false
+  starting.value = true
+  claimPlayback(el)
+  try {
+    await el.play()
+  } catch (cause) {
+    if (!isCurrent()) return
+    stopState()
     releasePlaybackIfCurrent(el)
-  } else {
-    claimPlayback(el)
-    el.play().then(() => {
-      playing.value = true
-    }).catch(() => {
-      playing.value = false
-    })
+    playbackFailed.value = !(cause instanceof DOMException && cause.name === 'AbortError' && el.paused)
+  } finally {
+    if (isCurrent()) starting.value = false
   }
 }
 
-function switchVariant(newIndex: number) {
+function togglePlay(): void {
+  const el = getAudio(activeIndex.value)
+  if (!el) return
+  if (playing.value || playRequested) {
+    stopState()
+    el.pause()
+    releasePlaybackIfCurrent(el)
+  } else {
+    void startAudio(activeIndex.value)
+  }
+}
+
+function switchVariant(newIndex: number): void {
   if (newIndex === activeIndex.value || newIndex < 0 || newIndex >= props.sources.length) return
   const prevIndex = activeIndex.value
   const prevAudio = getAudio(prevIndex)
   const nextAudio = getAudio(newIndex)
-  const pos = prevAudio ? prevAudio.currentTime : currentTime.value
-
+  const previousTime = prevAudio ? prevAudio.currentTime : currentTime.value
+  const pos = Number.isFinite(previousTime) && previousTime > 0 ? previousTime : 0
+  const resume = playRequested
+  stopState()
   activeIndex.value = newIndex
+  currentTime.value = pos
+  playbackFailed.value = false
+  if (prevAudio) {
+    prevAudio.pause()
+    releasePlaybackIfCurrent(prevAudio)
+  }
 
   if (nextAudio) {
     try {
       nextAudio.currentTime = pos
     } catch {}
-
-    if (playing.value) {
-      claimPlayback(nextAudio)
-      nextAudio.play().catch(() => {})
-      if (prevAudio) prevAudio.pause()
-    }
-  } else if (prevAudio && playing.value) {
-    prevAudio.pause()
-    playing.value = false
+    if (Number.isFinite(nextAudio.duration) && nextAudio.duration > 0) duration.value = nextAudio.duration
+    if (resume) void startAudio(newIndex)
   }
 }
 
-function onSeek(e: Event) {
-  const val = Number((e.target as HTMLInputElement).value)
+function onSeek(e: Event): void {
+  if (!(e.target instanceof HTMLInputElement)) return
+  const requestedTime = Number(e.target.value)
+  if (!Number.isFinite(requestedTime)) return
+  const val = Math.min(duration.value || 1, Math.max(0, requestedTime))
   currentTime.value = val
   const el = getAudio(activeIndex.value)
   if (el) el.currentTime = val
@@ -107,25 +169,36 @@ function downloadCurrent() {
   if (!url) return
   const a = document.createElement('a')
   a.href = url
-  a.download = `variant_${activeIndex.value + 1}_${Date.now()}.mp3`
+  a.download = `variant_${activeIndex.value + 1}_${Date.now()}`
   a.click()
 }
 
 watch(
-  () => props.sources,
-  () => {
+  () => props.sources.slice(),
+  (sources, previous) => {
+    if (sources.length === previous.length && sources.every((source, index) => source === previous[index])) return
+    stopState()
+    playbackFailed.value = false
+    for (const el of audioEls.value) {
+      if (el) { el.pause(); releasePlaybackIfCurrent(el) }
+    }
     if (activeIndex.value >= props.sources.length) {
       activeIndex.value = 0
     }
+    currentTime.value = 0
+    duration.value = props.durationSec || 0
   },
 )
 
 onBeforeUnmount(() => {
+  mounted = false
+  stopState()
   for (const el of audioEls.value) {
     if (el) {
       el.pause()
       releasePlaybackIfCurrent(el)
-      el.src = ''
+      el.removeAttribute('src')
+      el.load()
     }
   }
 })
@@ -137,12 +210,14 @@ onBeforeUnmount(() => {
     <audio
       v-for="(src, idx) in sources"
       :key="src"
-      :ref="(el) => (audioEls[idx] = el as HTMLAudioElement)"
+      :ref="(el) => setAudioElement(idx, el)"
       :src="src"
       preload="auto"
-      @loadedmetadata="onLoadedMetadata(idx)"
-      @timeupdate="onTimeUpdate(idx)"
-      @ended="onEnded"
+      @loadedmetadata="onLoadedMetadata(idx, $event)"
+      @timeupdate="onTimeUpdate(idx, $event)"
+      @play="onPlay(idx, $event)"
+      @pause="onPause(idx, $event)"
+      @ended="onEnded(idx, $event)"
     />
 
     <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
@@ -181,10 +256,13 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full accent-gradient text-white transition hover:opacity-90"
+        :aria-label="playing || starting ? t('waveformPlayer.pause') : t('waveformPlayer.play')"
+        :aria-busy="starting"
+        :disabled="!currentSrc"
         @click="togglePlay"
       >
-        <PlayIcon v-if="!playing" class="w-[13px] h-[13px]" />
-        <PauseIcon v-else class="w-[13px] h-[13px]" />
+        <PlayIcon v-if="!playing && !starting" aria-hidden="true" class="w-[13px] h-[13px]" />
+        <PauseIcon v-else aria-hidden="true" class="w-[13px] h-[13px]" />
       </button>
 
       <span class="w-20 shrink-0 text-xs tabular-nums text-text-dim">
@@ -197,9 +275,11 @@ onBeforeUnmount(() => {
         :max="duration || 1"
         step="0.05"
         :value="currentTime"
+        :aria-label="t('waveformPlayer.seek')"
         class="h-2 flex-1 cursor-pointer accent-current"
         @input="onSeek"
       />
     </div>
+    <p v-if="playbackFailed" role="alert" class="text-xs text-status-failed">{{ t('waveformPlayer.playbackFailed') }} <a :href="currentSrc" target="_blank" rel="noopener" class="underline">{{ t('waveformPlayer.openAudio') }}</a></p>
   </div>
 </template>

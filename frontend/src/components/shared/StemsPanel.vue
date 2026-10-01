@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import * as stemsApi from '../../api/stems'
@@ -8,9 +8,10 @@ import * as projectsApi from '../../api/projects'
 import { decodeStem, defaultChannelSettings, defaultMasterSettings } from '../../audio/mixerEngine'
 import type { TimelineProject, TimelineLane, Clip } from '../../audio/timelineTypes'
 import WaveformPlayer from './WaveformPlayer.vue'
-import type { ModelId } from '../../types'
+import type { SavedTrack } from '../../api/contracts'
+import { createPollingLoop } from '../../composables/polling'
 
-const props = defineProps<{ trackId: number; title: string; lyrics: string; model: ModelId }>()
+const props = defineProps<{ trackId: number; title: string; lyrics: string; model: SavedTrack['model'] }>()
 const { t } = useI18n()
 
 const router = useRouter()
@@ -29,7 +30,9 @@ const error = ref<string | null>(null)
 const stemUrls = ref<Record<string, string> | null>(null)
 const expanded = ref(false)
 
-let pollTimer: ReturnType<typeof setTimeout> | null = null
+let alive = true
+let generation = 0
+let actionGeneration = 0
 
 function applyStatus(s: StemsStatus) {
   status.value = s.status
@@ -37,45 +40,61 @@ function applyStatus(s: StemsStatus) {
   stemUrls.value = s.stems
 }
 
-function clearPoll() {
-  if (pollTimer != null) {
-    clearTimeout(pollTimer)
-    pollTimer = null
+const poll = createPollingLoop(async (context) => {
+  const trackId = props.trackId
+  const session = generation
+  try {
+    const response = await stemsApi.getSeparationStatus(trackId, context.signal)
+    if (!context.isCurrent() || !alive || session !== generation || trackId !== props.trackId) return false
+    applyStatus(response)
+  } catch {
+    // A transient error keeps an active backend job under observation.
   }
-}
+  return status.value === 'queued' || status.value === 'running'
+}, 2000)
 
-function schedulePoll() {
-  clearPoll()
-  pollTimer = setTimeout(async () => {
-    try {
-      applyStatus(await stemsApi.getSeparationStatus(props.trackId))
-    } catch {
-      // transient network error - keep polling on the same schedule
-    }
-    if (status.value === 'queued' || status.value === 'running') schedulePoll()
-  }, 2000)
+function beginAction() {
+  poll.stop()
+  const token = ++actionGeneration
+  const session = generation
+  const trackId = props.trackId
+  return { trackId, isCurrent: () => alive && session === generation && token === actionGeneration && trackId === props.trackId }
 }
 
 async function start(force = false) {
+  const context = beginAction()
   try {
-    applyStatus(await stemsApi.startSeparation(props.trackId, force))
+    const response = await stemsApi.startSeparation(context.trackId, force)
+    if (!context.isCurrent()) return
+    applyStatus(response)
     expanded.value = true
   } catch (e) {
+    if (!context.isCurrent()) return
     status.value = 'failed'
     error.value = e instanceof Error ? e.message : String(e)
     return
   }
-  schedulePoll()
+  poll.start(false)
 }
 
 async function cancel() {
-  clearPoll()
-  applyStatus(await stemsApi.cancelSeparation(props.trackId))
+  const context = beginAction()
+  try {
+    const response = await stemsApi.cancelSeparation(context.trackId)
+    if (!context.isCurrent()) return
+    applyStatus(response)
+  } catch (e) {
+    if (!context.isCurrent()) return
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+  if (context.isCurrent() && (status.value === 'queued' || status.value === 'running')) poll.start(false)
 }
 
 async function removeStems() {
   if (!window.confirm(t('stemsPanel.confirmDelete'))) return
-  await stemsApi.deleteStems(props.trackId)
+  const context = beginAction()
+  await stemsApi.deleteStems(context.trackId)
+  if (!context.isCurrent()) return
   status.value = 'idle'
   error.value = null
   stemUrls.value = null
@@ -131,15 +150,21 @@ async function openInEditor() {
   }
 }
 
-onMounted(async () => {
-  try {
-    applyStatus(await stemsApi.getSeparationStatus(props.trackId))
-    if (status.value === 'queued' || status.value === 'running') schedulePoll()
-  } catch {
-    status.value = 'idle'
-  }
+watch(() => props.trackId, () => {
+  generation++
+  actionGeneration++
+  poll.stop()
+  applyStatus({ status: 'idle', error: null, stems: null })
+  openingEditor.value = false
+  poll.start()
 })
-onBeforeUnmount(clearPoll)
+onMounted(() => poll.start())
+onBeforeUnmount(() => {
+  alive = false
+  generation++
+  actionGeneration++
+  poll.stop()
+})
 </script>
 
 <template>

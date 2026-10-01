@@ -2,7 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import type { JobStatus } from '../../types'
 
-defineProps<{ status: JobStatus }>()
+defineProps<{ status: JobStatus, label?: string }>()
 
 const { t } = useI18n()
 
@@ -25,6 +25,6 @@ const COLORS: Record<JobStatus, string> = {
 <template>
   <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium" :class="COLORS[status]">
     <span class="h-1.5 w-1.5 rounded-full bg-current"></span>
-    {{ t(LABEL_KEYS[status]) }}
+    {{ label || t(LABEL_KEYS[status]) }}
   </span>
 </template>

@@ -6,6 +6,7 @@ import { MODEL_LABELS, useModelSwitch } from '../composables/useModelSwitch'
 import * as projectsApi from '../api/projects'
 import type { ProjectSummary } from '../api/projects'
 import type { ModelId } from '../types'
+import VoiceSelect from '../components/shared/VoiceSelect.vue'
 
 const orchestrator = useOrchestratorStore()
 const { selectModel } = useModelSwitch()
@@ -47,6 +48,8 @@ async function onPick(id: ModelId) {
   <div class="mx-auto max-w-3xl py-10 text-center">
     <h1 class="text-2xl font-semibold text-text">{{ t('home.title') }}</h1>
     <p class="mt-2 text-sm text-text-dim">{{ t('home.subtitle') }}</p>
+
+    <VoiceSelect link class="mx-auto mt-8 max-w-md" />
 
     <div class="mt-8 grid gap-4 sm:grid-cols-2">
       <button

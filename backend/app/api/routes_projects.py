@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from .. import db
+
+from ..client_contracts import ProjectCreateRequest, ProjectUpdateRequest, ProjectFullResponse, ProjectsResponse
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -27,18 +29,18 @@ def _row_to_dict(row) -> dict:
     }
 
 
-@router.post("")
-async def create_project(name: str = Body("Untitled project", embed=True), data: dict = Body({}, embed=True)):
-    project_id = db.insert_project(name=name, data=data)
+@router.post("", response_model=ProjectFullResponse)
+async def create_project(body: ProjectCreateRequest):
+    project_id = db.insert_project(name=body.name, data=body.data)
     return _row_to_dict(db.get_project(project_id))
 
 
-@router.get("")
+@router.get("", response_model=ProjectsResponse)
 async def list_projects():
     return {"data": [dict(id=r["id"], created_at=r["created_at"], updated_at=r["updated_at"], name=r["name"]) for r in db.list_projects()]}
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", response_model=ProjectFullResponse)
 async def get_project(project_id: int):
     row = db.get_project(project_id)
     if not row:
@@ -46,11 +48,11 @@ async def get_project(project_id: int):
     return _row_to_dict(row)
 
 
-@router.put("/{project_id}")
-async def update_project(project_id: int, name: str | None = Body(None, embed=True), data: dict | None = Body(None, embed=True)):
+@router.put("/{project_id}", response_model=ProjectFullResponse)
+async def update_project(project_id: int, body: ProjectUpdateRequest):
     if not db.get_project(project_id):
         raise HTTPException(status_code=404, detail="project not found")
-    db.update_project(project_id, name=name, data=data)
+    db.update_project(project_id, name=body.name, data=body.data)
     return _row_to_dict(db.get_project(project_id))
 
 

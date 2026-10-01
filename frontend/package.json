@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "npm run check:types && vite build",
+    "test": "vitest run",
+    "preview": "vite preview",
+    "check:types": "node scripts/strict-types.mjs && vue-tsc -b"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
@@ -22,8 +24,10 @@
     "@types/node": "^24.13.3",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
+    "happy-dom": "20.14.5",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
+    "vitest": "5.0.3",
     "vue-tsc": "^3.3.11"
   }
 }

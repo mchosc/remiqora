@@ -1,24 +1,27 @@
 """Unified track storage endpoints used by both models' frontends.
 
-Generation itself still goes straight to the active model's own API via
-routes_proxy.py; once a track is finished, the frontend uploads it here so
-it lands in one shared place (DATA_DIR/files/<model>/ + one SQLite DB) instead
-of each model's own, separate storage.
+YuE2 and editor outputs are uploaded here. ACE batches persist directly on
+the backend through ace_jobs. All origins share DATA_DIR/files/<model>/ and
+one SQLite catalog.
 """
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Path as ApiPath, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import TypeAdapter, ValidationError
 
 from .. import db
 from ..config import MODELS
+from ..contracts import JsonObject, SavedTrack, SetTrackFavoriteRequest, TracksResponse
+from ..track_view import track_response as _row_to_dict
+
+from ..client_contracts import MixSettingsResponse
 
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 
@@ -51,42 +54,14 @@ def _create_unique(target_dir: Path, base: str, ext: str, with_abc: bool):
         return audio_path, abc_path, f
 
 
-def _row_to_dict(row) -> dict:
-    audio_path = Path(row["audio_path"])
-    return {
-        "id": row["id"],
-        "model": row["model"],
-        "created_at": row["created_at"],
-        "title": row["title"],
-        "lyrics": row["lyrics"],
-        "seed": row["seed"],
-        "duration_ms": row["duration_ms"],
-        "wall_ms": row["wall_ms"],
-        "params": json.loads(row["params_json"] or "{}"),
-        "filename": audio_path.name,
-        "audio_url": f"/api/tracks/{row['id']}/audio",
-        "abc_url": f"/api/tracks/{row['id']}/abc" if row["abc_path"] else None,
-        "stems": (
-            {n: f"/api/tracks/{row['id']}/stems/{n}" for n in json.loads(row["stems_json"]).keys()}
-            if row["stems_json"]
-            else None
-        ),
-        "midi": (
-            {s: f"/api/tracks/{row['id']}/midi/{s}" for s in json.loads(row["midi_json"]).keys()}
-            if row["midi_json"]
-            else None
-        ),
-    }
-
-
-@router.post("")
+@router.post("", response_model=SavedTrack)
 async def save_track(
     model: str = Form(...),
     title: str = Form(""),
     lyrics: str = Form(""),
-    seed: Optional[int] = Form(None),
-    duration_ms: Optional[float] = Form(None),
-    wall_ms: Optional[float] = Form(None),
+    seed: Optional[int] = Form(None, ge=-(2 ** 63), le=2 ** 63 - 1),
+    duration_ms: Optional[float] = Form(None, ge=0, allow_inf_nan=False),
+    wall_ms: Optional[float] = Form(None, ge=0, allow_inf_nan=False),
     params: str = Form("{}"),
     abc: Optional[str] = Form(None),
     audio: UploadFile = File(...),
@@ -94,9 +69,9 @@ async def save_track(
     if model not in ALLOWED_TRACK_MODELS:
         raise HTTPException(status_code=400, detail=f"unknown track model/origin '{model}'")
     try:
-        params_dict = json.loads(params) if params else {}
-    except json.JSONDecodeError:
-        params_dict = {}
+        params_dict = TypeAdapter(JsonObject).validate_json(params or "{}")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="invalid_track_params") from exc
 
     ext = (audio.filename or "").rsplit(".", 1)[-1].lower()
     if ext not in ALLOWED_AUDIO_EXT:
@@ -137,7 +112,7 @@ async def save_track(
     return _row_to_dict(row)
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=SavedTrack)
 async def upload_track(
     audio: UploadFile = File(...),
     title: Optional[str] = Form(None),
@@ -178,7 +153,7 @@ async def upload_track(
     return _row_to_dict(row)
 
 
-@router.get("")
+@router.get("", response_model=TracksResponse)
 async def list_tracks(model: Optional[str] = None):
     if model is not None and model not in ALLOWED_TRACK_MODELS:
         raise HTTPException(status_code=400, detail=f"unknown track model/origin '{model}'")
@@ -201,14 +176,27 @@ async def track_abc(track_id: int):
     return PlainTextResponse(Path(row["abc_path"]).read_text(encoding="utf-8"))
 
 
-@router.put("/{track_id}")
+@router.put("/{track_id}", response_model=SavedTrack)
 async def rename_track(track_id: int, title: str = Body(..., embed=True)):
     if not db.update_track_title(track_id, title):
         raise HTTPException(status_code=404, detail="track not found")
     return _row_to_dict(db.get_track(track_id))
 
 
-@router.get("/{track_id}/mix")
+@router.put("/{track_id}/favorite", response_model=SavedTrack)
+async def set_track_favorite(
+    track_id: Annotated[int, ApiPath(ge=1, le=9_007_199_254_740_991)],
+    request: SetTrackFavoriteRequest,
+) -> SavedTrack:
+    if not db.set_track_favorite(track_id, request.is_favorite):
+        raise HTTPException(status_code=404, detail="track not found")
+    row = db.get_track(track_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return _row_to_dict(row)
+
+
+@router.get("/{track_id}/mix", response_model=MixSettingsResponse)
 async def get_mix_settings(track_id: int):
     row = db.get_track(track_id)
     if not row:
@@ -216,8 +204,8 @@ async def get_mix_settings(track_id: int):
     return {"settings": db.get_mix_settings(track_id)}
 
 
-@router.put("/{track_id}/mix")
-async def put_mix_settings(track_id: int, settings: dict = Body(...)):
+@router.put("/{track_id}/mix", response_model=MixSettingsResponse)
+async def put_mix_settings(track_id: int, settings: JsonObject = Body(...)):
     row = db.get_track(track_id)
     if not row:
         raise HTTPException(status_code=404, detail="track not found")
@@ -227,6 +215,11 @@ async def put_mix_settings(track_id: int, settings: dict = Body(...)):
 
 @router.delete("/{track_id}")
 async def delete_track(track_id: int):
-    if not db.delete_track(track_id):
-        return JSONResponse({"error": "not found"}, status_code=404)
+    from ..voice_build import protect_track_removal
+    from ..audio_versions import protect_track_versions_removal
+    from ..audio_exports import protect_track_exports_removal, delete_track_exports
+    async with protect_track_versions_removal(track_id), protect_track_removal(track_id), protect_track_exports_removal(track_id):
+        delete_track_exports(track_id)
+        if not db.delete_track(track_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
     return {"deleted": True}

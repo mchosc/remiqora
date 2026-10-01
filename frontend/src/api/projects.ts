@@ -1,32 +1,36 @@
 import { apiFetch, apiJson } from './http'
 import type { TimelineProject } from '../audio/timelineTypes'
 
-export interface ProjectSummary {
-  id: number
-  created_at: string
-  updated_at: string
-  name: string
-}
+import { parseProjectsResponse, parseProjectFullResponse } from './contracts'
+import type { ProjectSummaryResponse } from './contracts'
+import { parseTimelineProject } from './editorValidation'
+export { parseTimelineProject } from './editorValidation'
 
+export type ProjectSummary = ProjectSummaryResponse
 export interface ProjectFull extends ProjectSummary {
   data: TimelineProject
 }
 
+function parseProjectFull(value: unknown): ProjectFull {
+  const row = parseProjectFullResponse(value)
+  return { ...row, data: parseTimelineProject(row.data) }
+}
+
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const json = await apiFetch<{ data: ProjectSummary[] }>('/api/projects')
+  const json = await apiFetch('/api/projects', undefined, parseProjectsResponse)
   return json.data
 }
 
 export function createProject(name: string, data: TimelineProject): Promise<ProjectFull> {
-  return apiJson<ProjectFull>('/api/projects', { name, data }, 'POST')
+  return apiJson('/api/projects', { name, data: parseTimelineProject(data) }, 'POST', parseProjectFull)
 }
 
 export function getProject(id: number): Promise<ProjectFull> {
-  return apiFetch<ProjectFull>(`/api/projects/${id}`)
+  return apiFetch(`/api/projects/${id}`, undefined, parseProjectFull)
 }
 
 export function updateProject(id: number, patch: { name?: string; data?: TimelineProject }): Promise<ProjectFull> {
-  return apiJson<ProjectFull>(`/api/projects/${id}`, patch, 'PUT')
+  return apiJson(`/api/projects/${id}`, { ...patch, ...(patch.data === undefined ? {} : { data: parseTimelineProject(patch.data) }) }, 'PUT', parseProjectFull)
 }
 
 export async function deleteProject(id: number): Promise<void> {

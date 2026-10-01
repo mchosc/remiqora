@@ -1,6 +1,7 @@
 import { apiFetch, apiJson } from './http'
 import { getConfig } from './orchestrator'
 import type { Yue2ModelSpecConfig } from './orchestrator'
+import * as v from './nativeValidation'
 
 const BASE = '/api/yue2'
 
@@ -57,7 +58,6 @@ export async function getSheetSageModelSpec(): Promise<Yue2ModelSpec> {
 export type CotMode = 'off' | 'melody' | 'full'
 
 export interface GenerateOptions {
-  [key: string]: unknown
   style: string
   cot: CotMode
   cfg_scale?: number
@@ -96,13 +96,19 @@ function modelSessionOptions(precision: 'q8_0' | 'q4_0'): Record<string, string>
   return {}
 }
 
-async function getModels(): Promise<Array<{ id: string; loaded: boolean }>> {
-  const json = await apiFetch<{ data?: Array<{ id: string; loaded: boolean }> }>(`${BASE}/v1/models`)
-  return json.data || []
+async function getModels(signal?: AbortSignal): Promise<Array<{ id: string; loaded: boolean }>> {
+  const json = v.record(await apiFetch(`${BASE}/v1/models`, { signal }))
+  return v.array(json.data, (item) => {
+    const model = v.record(item)
+    return { id: v.string(model.id), loaded: v.boolean(model.loaded) }
+  })
 }
 
-async function loadModelSpec(spec: Yue2ModelSpec, sessionOptions?: Record<string, string>): Promise<void> {
-  await apiJson(`${BASE}/v1/models/load`, {
+async function loadModelSpec(spec: Yue2ModelSpec, sessionOptions?: Record<string, string>, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  await apiFetch(`${BASE}/v1/models/load`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+    body: JSON.stringify({
     id: spec.id,
     path: spec.path,
     family: spec.family,
@@ -111,6 +117,7 @@ async function loadModelSpec(spec: Yue2ModelSpec, sessionOptions?: Record<string
     ...(spec.model_spec_override ? { model_spec_override: spec.model_spec_override } : {}),
     load_options: {},
     session_options: sessionOptions || {},
+    }),
   })
 }
 
@@ -126,7 +133,9 @@ export async function unloadModelId(id: string): Promise<void> {
 export async function ensureLoaded(
   specOrId?: Yue2ModelSpec | 'yue2' | 'sheetsage2' | 'muscriptor',
   sessionOptions?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted()
   let spec: Yue2ModelSpec
   if (!specOrId || specOrId === 'yue2') {
     spec = await getYue2ModelSpec()
@@ -144,48 +153,85 @@ export async function ensureLoaded(
     }
   }
 
+  signal?.throwIfAborted()
   if (sessionOptions !== undefined) {
-    await loadModelSpec(spec, sessionOptions)
+    await loadModelSpec(spec, sessionOptions, signal)
     return
   }
-  const list = await getModels()
+  const list = await getModels(signal)
+  signal?.throwIfAborted()
   if (list.some((m) => m.id === spec.id && m.loaded)) return
-  await loadModelSpec(spec)
+  await loadModelSpec(spec, undefined, signal)
 }
 
 export function precisionSessionOptions(precision: 'q8_0' | 'q4_0'): Record<string, string> {
   return modelSessionOptions(precision)
 }
 
-export async function uploadFile(file: File): Promise<string> {
+export async function uploadFile(file: File, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
   const match = /\.([A-Za-z0-9]{1,8})$/.exec(file.name)
   const filename = `upload.${(match && match[1] && match[1].toLowerCase()) || 'bin'}`
-  const json = await apiFetch<{ path: string }>(`${BASE}/v1/ui/upload`, {
+  const json = v.record(await apiFetch(`${BASE}/v1/ui/upload`, {
     method: 'POST',
     headers: {
       'Content-Type': file.type || 'application/octet-stream',
       'X-AudioCPP-Filename': filename,
     },
     body: file,
-  })
+    signal,
+  }))
   // The native server's JSON parser mishandles backslash escapes when a
   // Windows path it returned is echoed back in a later request body -
   // forward slashes round-trip fine, so normalize once here.
-  return json.path.replace(/\\/g, '/')
+  return v.string(json.path).replace(/\\/g, '/')
+}
+
+export function parseTaskRunResult(value: unknown): TaskRunResult {
+  const row = v.record(value)
+  const result: TaskRunResult = {}
+  if (row.audio !== undefined) result.audio = v.string(row.audio)
+  if (row.text !== undefined) result.text = v.string(row.text)
+  if (row.artifacts !== undefined) {
+    result.artifacts = v.array(row.artifacts, (item) => {
+      const artifact = v.record(item)
+      const meta = artifact.meta === undefined ? undefined : v.record(artifact.meta)
+      return {
+        id: artifact.id === undefined ? undefined : v.string(artifact.id),
+        payload: artifact.payload === undefined ? undefined : v.string(artifact.payload),
+        meta: meta ? {
+          format: meta.format === undefined ? undefined : v.string(meta.format),
+          extension: meta.extension === undefined ? undefined : v.string(meta.extension),
+        } : undefined,
+      }
+    })
+  }
+  if (row.timing !== undefined) {
+    const timing = v.record(row.timing)
+    result.timing = {
+      wall_ms: timing.wall_ms === undefined ? undefined : v.number(timing.wall_ms),
+      audio_duration_ms: timing.audio_duration_ms === undefined ? undefined : v.number(timing.audio_duration_ms),
+    }
+  }
+  return result
 }
 
 export async function runTask(model: string, request: unknown, signal?: AbortSignal): Promise<TaskRunResult> {
-  return apiFetch<TaskRunResult>(`${BASE}/v1/tasks/run`, {
+  signal?.throwIfAborted()
+  return parseTaskRunResult(await apiFetch(`${BASE}/v1/tasks/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, request }),
     signal,
-  })
+  }))
 }
 
 export async function generateTrack(lyrics: string, seed: number, options: GenerateOptions, precision: 'q8_0' | 'q4_0', signal?: AbortSignal): Promise<TaskRunResult> {
+  signal?.throwIfAborted()
   const spec = await getYue2ModelSpec()
-  await ensureLoaded(spec, precisionSessionOptions(precision))
+  signal?.throwIfAborted()
+  await ensureLoaded(spec, precisionSessionOptions(precision), signal)
+  signal?.throwIfAborted()
   return runTask(spec.id, { lyrics, seed, options }, signal)
 }
 
@@ -217,6 +263,10 @@ export function base64AudioBlob(data: string): Blob {
   return new Blob([bytes], { type: 'audio/wav' })
 }
 
-export async function health(): Promise<HealthResponse> {
-  return apiFetch<HealthResponse>(`${BASE}/health`)
+export async function health(signal?: AbortSignal): Promise<HealthResponse> {
+  const row = v.record(await apiFetch(`${BASE}/health`, { signal }))
+  return {
+    status: row.status === undefined ? undefined : v.string(row.status),
+    backend: row.backend === undefined ? undefined : v.string(row.backend),
+  }
 }

@@ -15,25 +15,35 @@ other), independent of orchestrator.manager's model-switching lock.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
-import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
+from collections.abc import Awaitable, Callable, Mapping
 
 from . import db
 from .config import DEMUCS_DIR, FFMPEG_BIN_DIR, LOG_DIR
 from .orchestrator.process import tail_log
+from .job_lifecycle import await_cleanup, cancel_and_wait, kill_process_tree, request_cancel, spawn_process
+
+logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
 
 STEM_NAMES = ("vocals", "drums", "bass", "other")
 
 _gpu_lock = asyncio.Lock()
+# Voice training and song conversion take this same lock. It is not re-entrant:
+# a caller that already holds it must not call separate_file().
+gpu_lock = _gpu_lock
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
+SpawnProcess = Callable[
+    [list[str], Path, Mapping[str, str], int], Awaitable[asyncio.subprocess.Process]
+]
 
 
 @dataclass
@@ -42,6 +52,7 @@ class StemJob:
     error: Optional[str] = None
     proc: Optional[asyncio.subprocess.Process] = None
     cancel_requested: bool = False
+    task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
 _jobs: dict[int, StemJob] = {}
@@ -55,7 +66,7 @@ async def start(track_id: int, *, force: bool = False) -> StemJob:
         return job
     job = StemJob(status="queued")
     _jobs[track_id] = job
-    asyncio.create_task(_run(track_id))
+    job.task = asyncio.create_task(_run(track_id))
     return job
 
 
@@ -63,14 +74,102 @@ async def cancel(track_id: int) -> dict:
     job = _jobs.get(track_id)
     if job and job.status in ("queued", "running"):
         job.cancel_requested = True
-        if job.proc is not None:
+        try:
+            await cancel_and_wait(job.task)
+        finally:
             await _kill_tree(job.proc)
+            job.proc = None
+            if job.status in ("queued", "running"):
+                job.status = "cancelled"
+                job.error = None
     return status(track_id)
+
+
+async def shutdown() -> None:
+    """Drain every separation task before application shutdown completes."""
+    for job in _jobs.values():
+        job.cancel_requested = True
+        request_cancel(job.task)
+    await await_cleanup(asyncio.gather(*(cancel(track_id) for track_id in list(_jobs))))
 
 
 def is_active(track_id: int) -> bool:
     job = _jobs.get(track_id)
     return bool(job and job.status in ("queued", "running"))
+
+
+def work_busy() -> bool:
+    return any(job.status in ("queued", "running") for job in _jobs.values())
+
+
+def _demucs_cmd(audio: Path, out_dir: Path, *, quality: Literal["fast", "high"] = "fast") -> list[str]:
+    if quality not in ("fast", "high"):
+        raise ValueError("invalid_separation_quality")
+    model = "htdemucs_ft" if quality == "high" else "htdemucs"
+    return ["uv", "run", "demucs", "-n", model, "--float32", "-o", str(out_dir), str(audio)]
+
+
+def _demucs_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PATH"] = f"{FFMPEG_BIN_DIR}{os.pathsep}{env.get('PATH', '')}"
+    env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    env.setdefault("DO_NOT_TRACK", "1")
+    return env
+
+
+async def separate_file(
+    audio: Path,
+    out_dir: Path,
+    *,
+    log_name: str,
+    on_proc: Callable[[asyncio.subprocess.Process | None], None] | None = None,
+    new_session: bool = False,
+    quality: Literal["fast", "high"] = "fast",
+    spawn: SpawnProcess | None = None,
+) -> dict[str, Path]:
+    """Split audio while holding gpu_lock; a caller may own worker creation."""
+    async with gpu_lock:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = LOG_DIR / f"{log_name}.log"
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+            argv = _demucs_cmd(audio, out_dir, quality=quality)
+            env = _demucs_env()
+            if spawn is None:
+                proc = await spawn_process(
+                    *argv,
+                    cwd=str(DEMUCS_DIR),
+                    env=env,
+                    stdout=log_file,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            else:
+                proc = await spawn(argv, DEMUCS_DIR, env, log_file.fileno())
+            if on_proc is not None:
+                on_proc(proc)
+            drained = False
+            try:
+                returncode = await proc.wait()
+                drained = True
+            except asyncio.CancelledError:
+                await _kill_tree(proc)
+                drained = True
+                shutil.rmtree(out_dir, ignore_errors=True)
+                raise
+            finally:
+                if drained and on_proc is not None:
+                    on_proc(None)
+        if returncode != 0:
+            raise RuntimeError(f"demucs exited with code {returncode}\n{tail_log(log_name)}")
+        stems = {
+            wav.stem: wav
+            for wav in out_dir.rglob("*.wav")
+            if wav.stem in STEM_NAMES
+        }
+        if not stems:
+            raise RuntimeError(f"demucs finished but produced no stem files\n{tail_log(log_name)}")
+        return stems
 
 
 def forget(track_id: int) -> None:
@@ -79,21 +178,11 @@ def forget(track_id: int) -> None:
     _jobs.pop(track_id, None)
 
 
-async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+async def _kill_tree(proc: asyncio.subprocess.Process | None) -> None:
     # `uv run demucs ...` spawns demucs as a child process, so plain
     # terminate()/kill() on the "uv" process alone leaves the actual
     # GPU computation running. Mirrors ManagedProcess._force_kill().
-    if IS_WINDOWS:
-        killer = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(proc.pid), "/T", "/F",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
-        await killer.wait()
-    else:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    await kill_process_tree(proc)
 
 
 def status(track_id: int) -> dict:
@@ -114,6 +203,7 @@ def status(track_id: int) -> dict:
 async def _run(track_id: int) -> None:
     job = _jobs[track_id]
     log_name = f"demucs_{track_id}"
+    out_dir: Path | None = None
     try:
         async with _gpu_lock:
             if job.cancel_requested:
@@ -137,14 +227,12 @@ async def _run(track_id: int) -> None:
 
             LOG_DIR.mkdir(parents=True, exist_ok=True)
             log_path = LOG_DIR / f"{log_name}.log"
-            env = os.environ.copy()
-            env["PATH"] = f"{FFMPEG_BIN_DIR}{os.pathsep}{env.get('PATH', '')}"
 
             with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
-                proc = await asyncio.create_subprocess_exec(
-                    "uv", "run", "demucs", "-n", "htdemucs", "-o", str(out_dir), str(audio_path),
+                proc = await spawn_process(
+                    *_demucs_cmd(audio_path, out_dir),
                     cwd=str(DEMUCS_DIR),
-                    env=env,
+                    env=_demucs_env(),
                     stdout=log_file,
                     stderr=asyncio.subprocess.STDOUT,
                 )
@@ -156,7 +244,8 @@ async def _run(track_id: int) -> None:
                 return
             if returncode != 0:
                 job.status = "failed"
-                job.error = f"demucs exited with code {returncode}\n{tail_log(log_name)}"
+                logger.error("Demucs %s exited with code %s: %s", track_id, returncode, tail_log(log_name))
+                job.error = "Stem separation failed. Check the backend log."
                 return
 
             stems = {
@@ -166,10 +255,21 @@ async def _run(track_id: int) -> None:
             }
             if not stems:
                 job.status = "failed"
-                job.error = f"demucs finished but produced no stem files\n{tail_log(log_name)}"
+                logger.error("Demucs %s produced no stems: %s", track_id, tail_log(log_name))
+                job.error = "Stem separation produced no audio. Check the backend log."
                 return
             db.update_track_stems(track_id, stems)
             job.status = "done"
-    except Exception as exc:  # noqa: BLE001 - any failure must surface to the UI
+    except asyncio.CancelledError:
+        await _kill_tree(job.proc)
+        job.status = "cancelled"
+        job.error = None
+        raise
+    except Exception:
+        logger.exception("Stem separation failed for track %s", track_id)
         job.status = "failed"
-        job.error = str(exc)
+        job.error = "Stem separation failed. Check the backend log."
+    finally:
+        job.proc = None
+        if out_dir is not None and job.status != "done":
+            shutil.rmtree(out_dir, ignore_errors=True)

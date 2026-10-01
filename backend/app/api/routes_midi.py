@@ -15,6 +15,8 @@ from .. import db, midi
 from ..orchestrator.manager import manager
 from ..orchestrator.state import ModelStatus
 
+from ..client_contracts import MidiStatusResponse
+
 router = APIRouter(prefix="/api/tracks", tags=["midi"])
 
 
@@ -30,14 +32,14 @@ def _payload(track_id: int) -> dict:
     return {"sources": midi.status_all(track_id), "urls": _midi_urls(track_id), "available": available}
 
 
-@router.get("/{track_id}/midi/status")
+@router.get("/{track_id}/midi/status", response_model=MidiStatusResponse)
 async def midi_status(track_id: int):
     if not db.get_track(track_id):
         raise HTTPException(status_code=404, detail="track not found")
     return _payload(track_id)
 
 
-@router.post("/{track_id}/midi/{source}/cancel")
+@router.post("/{track_id}/midi/{source}/cancel", response_model=MidiStatusResponse)
 async def cancel_midi(track_id: int, source: str):
     if source not in midi.SOURCES:
         raise HTTPException(status_code=404, detail="unknown source")
@@ -45,7 +47,7 @@ async def cancel_midi(track_id: int, source: str):
     return _payload(track_id)
 
 
-@router.post("/{track_id}/midi/{source}")
+@router.post("/{track_id}/midi/{source}", response_model=MidiStatusResponse)
 async def start_midi(track_id: int, source: str, force: bool = False):
     if source not in midi.SOURCES:
         raise HTTPException(status_code=404, detail="unknown source")

@@ -71,6 +71,15 @@ button:not(:disabled) {
   background-image: linear-gradient(135deg, var(--color-accent1), var(--color-accent2));
 }
 
+.progress-indeterminate {
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+
 /* Page fade transition */
 .fade-enter-active,
 .fade-leave-active {

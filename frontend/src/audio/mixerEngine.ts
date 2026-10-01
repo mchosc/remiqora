@@ -128,6 +128,8 @@ export function defaultMixSettings(): MixSettings {
 }
 
 export interface BuiltChannel {
+  /** Every node allocated by this channel, including internal routing nodes. */
+  nodes: readonly AudioNode[]
   input: AudioNode
   output: AudioNode
   filterNode: BiquadFilterNode
@@ -172,7 +174,7 @@ export interface BuiltChannel {
  * Generates an asymmetrical soft clipping curve using tanh.
  * Used for the Distortion effect and the Master Limiter.
  */
-function makeSoftClipCurve(threshold = 0.9): Float32Array {
+function makeSoftClipCurve(threshold = 0.9): Float32Array<ArrayBuffer> {
   const size = 8192
   const curve = new Float32Array(size)
   for (let i = 0; i < size; i++) {
@@ -191,7 +193,7 @@ function makeSoftClipCurve(threshold = 0.9): Float32Array {
  * Generates a staircase curve for reducing bit depth.
  * Used for the Bitcrusher effect.
  */
-function makeBitcrusherCurve(bits: number): Float32Array {
+function makeBitcrusherCurve(bits: number): Float32Array<ArrayBuffer> {
   const steps = Math.pow(2, bits)
   const size = 8192
   const curve = new Float32Array(size)
@@ -240,10 +242,7 @@ export function buildChannel(ctx: BaseAudioContext, isMaster: boolean, impulse: 
   const chorusDry = ctx.createGain()
   const chorusWet = ctx.createGain()
   chorusWet.gain.value = 0
-  // LFO needs to be started
-  if (typeof (chorusLfo as any).start === 'function') {
-    chorusLfo.start(0)
-  }
+  chorusLfo.start(0)
 
   const bitcrushNode = ctx.createWaveShaper()
   const bitcrushSend = ctx.createGain()
@@ -342,7 +341,7 @@ export function buildChannel(ctx: BaseAudioContext, isMaster: boolean, impulse: 
     limiterComp.release.value = 0.1
 
     limiterShaper = ctx.createWaveShaper()
-    limiterShaper.curve = makeSoftClipCurve(0.9) as any
+    limiterShaper.curve = makeSoftClipCurve(0.9)
   } else {
     input = volumeGain
     volumeGain.connect(filterNode)
@@ -399,8 +398,20 @@ export function buildChannel(ctx: BaseAudioContext, isMaster: boolean, impulse: 
     }
   }
 
-  return { 
-    input, output, 
+  const nodes: AudioNode[] = [
+    filterNode, bitcrushInput, bitcrushNode, bitcrushSend, bitcrushDry, bitcrushWet,
+    distInput, distNode, distSend, distDry, distWet,
+    chorusInput, chorusDelay, chorusSend, chorusLfo, chorusLfoGain, chorusDry, chorusWet,
+    delayInput, delayNode, delaySend, delayFeedback, delayDry, delayWet, fxOutput,
+    volumeGain, eqLow, eqMid, eqHigh, comp,
+    reverbSend, dryGain, wetGain, convolver, reverbOut,
+  ]
+  for (const node of [panner, analyser, analyserL, analyserR, splitter, limiterComp, limiterShaper]) {
+    if (node) nodes.push(node)
+  }
+
+  return {
+    nodes, input, output,
     filterNode,
     distNode,
     distSend,
@@ -449,7 +460,7 @@ export function applyChannelSettings(ch: BuiltChannel, s: ChannelSettings | Mast
   ch.eqHigh.gain.value = s.eq.high
   ch.comp.threshold.value = s.comp.threshold
   ch.comp.ratio.value = s.comp.ratio
-  if (ch.panner && 'pan' in s) ch.panner.pan.value = (s as ChannelSettings).pan
+  if (ch.panner && 'pan' in s) ch.panner.pan.value = s.pan
   
   const rMix = Math.max(0, Math.min(1, s.reverb.mix))
   ch.reverbSend.gain.value = rMix > 0 ? 1 : 0
@@ -457,29 +468,27 @@ export function applyChannelSettings(ch: BuiltChannel, s: ChannelSettings | Mast
   ch.wetGain.gain.value = rMix
 
   // FX settings
-  const fullS = s as ChannelSettings
-  
-  const fType = fullS.filter?.type ?? 'lowpass'
-  const fFreq = fullS.filter?.enabled ? (fullS.filter.frequency ?? 22000) : (fType === 'lowpass' ? 22000 : 0)
-  const fRes = fullS.filter?.enabled ? (fullS.filter.resonance ?? 1) : 1
+  const fType = s.filter?.type ?? 'lowpass'
+  const fFreq = s.filter?.enabled ? (s.filter.frequency ?? 22000) : (fType === 'lowpass' ? 22000 : 0)
+  const fRes = s.filter?.enabled ? (s.filter.resonance ?? 1) : 1
   ch.filterNode.type = fType
   ch.filterNode.frequency.value = fFreq
   ch.filterNode.Q.value = fRes
 
-  const dEnabled = fullS.distortion?.enabled ?? false
-  const dAmt = fullS.distortion?.amount ?? 0
-  const dMix = fullS.distortion?.mix ?? 0
+  const dEnabled = s.distortion?.enabled ?? false
+  const dAmt = s.distortion?.amount ?? 0
+  const dMix = s.distortion?.mix ?? 0
   const curveAmount = dEnabled ? Math.max(0, Math.min(0.99, dAmt)) : 0
-  ch.distNode.curve = (curveAmount > 0 ? makeSoftClipCurve(1.0 - curveAmount) : null) as any
+  ch.distNode.curve = curveAmount > 0 ? makeSoftClipCurve(1.0 - curveAmount) : null
   const distMix = dEnabled ? dMix : 0
   ch.distSend.gain.value = distMix > 0 ? 1 : 0
   ch.distDry.gain.value = 1 - distMix
   ch.distWet.gain.value = distMix
 
-  const delEnabled = fullS.delay?.enabled ?? false
-  const delTime = fullS.delay?.time ?? 0.3
-  const delFbk = fullS.delay?.feedback ?? 0.4
-  const delMix = fullS.delay?.mix ?? 0
+  const delEnabled = s.delay?.enabled ?? false
+  const delTime = s.delay?.time ?? 0.3
+  const delFbk = s.delay?.feedback ?? 0.4
+  const delMix = s.delay?.mix ?? 0
   ch.delayNode.delayTime.value = delTime // NEVER SET TO 0 in a feedback loop
   ch.delayFeedback.gain.value = delEnabled ? delFbk : 0
   const delayMixAmt = delEnabled ? delMix : 0
@@ -487,10 +496,10 @@ export function applyChannelSettings(ch: BuiltChannel, s: ChannelSettings | Mast
   ch.delayDry.gain.value = 1 - delayMixAmt
   ch.delayWet.gain.value = delayMixAmt
 
-  const choEnabled = fullS.chorus?.enabled ?? false
-  const choRate = fullS.chorus?.rate ?? 1.5
-  const choDepth = fullS.chorus?.depth ?? 0.002
-  const choMix = fullS.chorus?.mix ?? 0
+  const choEnabled = s.chorus?.enabled ?? false
+  const choRate = s.chorus?.rate ?? 1.5
+  const choDepth = s.chorus?.depth ?? 0.002
+  const choMix = s.chorus?.mix ?? 0
   ch.chorusLfo.frequency.value = choRate
   ch.chorusLfoGain.gain.value = choDepth
   const chorusMixAmt = choEnabled ? choMix : 0
@@ -498,10 +507,10 @@ export function applyChannelSettings(ch: BuiltChannel, s: ChannelSettings | Mast
   ch.chorusDry.gain.value = 1 - chorusMixAmt
   ch.chorusWet.gain.value = chorusMixAmt
 
-  const bcEnabled = fullS.bitcrusher?.enabled ?? false
-  const bcBits = fullS.bitcrusher?.bits ?? 8
-  const bcMix = fullS.bitcrusher?.mix ?? 0
-  ch.bitcrushNode.curve = bcEnabled ? (makeBitcrusherCurve(bcBits) as any) : null
+  const bcEnabled = s.bitcrusher?.enabled ?? false
+  const bcBits = s.bitcrusher?.bits ?? 8
+  const bcMix = s.bitcrusher?.mix ?? 0
+  ch.bitcrushNode.curve = bcEnabled ? makeBitcrusherCurve(bcBits) : null
   const bcMixAmt = bcEnabled ? bcMix : 0
   ch.bitcrushSend.gain.value = bcMixAmt > 0 ? 1 : 0
   ch.bitcrushDry.gain.value = 1 - bcMixAmt
@@ -527,11 +536,13 @@ export interface MixGraph {
 export function buildMixGraph(ctx: BaseAudioContext, impulse: AudioBuffer): MixGraph {
   const master = buildChannel(ctx, true, impulse)
   master.output.connect(ctx.destination)
-  const stems = {} as Record<StemName, BuiltChannel>
-  for (const name of STEM_NAMES) {
+  function buildStem(): BuiltChannel {
     const ch = buildChannel(ctx, false, impulse)
     ch.output.connect(master.input)
-    stems[name] = ch
+    return ch
+  }
+  const stems: Record<StemName, BuiltChannel> = {
+    vocals: buildStem(), drums: buildStem(), bass: buildStem(), other: buildStem(),
   }
   return { ctx, stems, master }
 }
@@ -544,40 +555,10 @@ export function applyMixSettings(graph: MixGraph, settings: MixSettings): void {
   applyChannelSettings(graph.master, settings.master, settings.master.volume)
 }
 
-function disconnectChannel(ch: BuiltChannel): void {
-  ch.filterNode.disconnect()
-  ch.distNode.disconnect()
-  ch.distDry.disconnect()
-  ch.distWet.disconnect()
-  ch.delayNode.disconnect()
-  ch.delayFeedback.disconnect()
-  ch.delayDry.disconnect()
-  ch.delayWet.disconnect()
-  ch.chorusDelay.disconnect()
-  try { ch.chorusLfo.stop() } catch {}
-  ch.chorusLfo.disconnect()
-  ch.chorusLfoGain.disconnect()
-  ch.chorusDry.disconnect()
-  ch.chorusWet.disconnect()
-  ch.bitcrushNode.disconnect()
-  ch.bitcrushDry.disconnect()
-  ch.bitcrushWet.disconnect()
-  
-  ch.volumeGain.disconnect()
-  ch.eqLow.disconnect()
-  ch.eqMid.disconnect()
-  ch.eqHigh.disconnect()
-  ch.comp.disconnect()
-  ch.panner?.disconnect()
-  ch.dryGain.disconnect()
-  ch.wetGain.disconnect()
-  ch.convolver.disconnect()
-  ch.analyser?.disconnect()
-  ch.analyserL?.disconnect()
-  ch.analyserR?.disconnect()
-  ch.splitter?.disconnect()
-  ch.limiterComp?.disconnect()
-  ch.limiterShaper?.disconnect()
+/** Disposes all channel resources, including modulation and feedback paths. */
+export function disconnectChannel(ch: BuiltChannel): void {
+  try { ch.chorusLfo.stop() } catch { /* It may already have ended. */ }
+  for (const node of ch.nodes) node.disconnect()
 }
 
 export function getChannelLevel(ch: BuiltChannel): { peak: number; clipping: boolean; peakL: number; peakR: number } {
@@ -722,7 +703,7 @@ export function playFrom(
   offsetSec: number,
   onEnded: () => void,
 ): PlaybackHandle {
-  const ctx = graph.ctx as AudioContext
+  const ctx = graph.ctx
   let longest: StemName = STEM_NAMES[0]
   for (const name of STEM_NAMES) {
     if (buffers[name].duration > buffers[longest].duration) longest = name
@@ -761,11 +742,21 @@ export async function renderMix(
   const ctx = new OfflineAudioContext(2, Math.ceil(durationSec * sampleRate), sampleRate)
   const graph = buildMixGraph(ctx, getReverbImpulse(sampleRate))
   applyMixSettings(graph, settings)
-  for (const name of STEM_NAMES) {
-    const src = ctx.createBufferSource()
-    src.buffer = buffers[name]
-    src.connect(graph.stems[name].input)
-    src.start(0)
+  const sources: AudioBufferSourceNode[] = []
+  try {
+    for (const name of STEM_NAMES) {
+      const src = ctx.createBufferSource()
+      sources.push(src)
+      src.buffer = buffers[name]
+      src.connect(graph.stems[name].input)
+      src.start(0)
+    }
+    return await ctx.startRendering()
+  } finally {
+    for (const source of sources) {
+      try { source.stop() } catch { /* It may already have ended or failed to start. */ }
+      source.disconnect()
+    }
+    disconnectMixGraph(graph)
   }
-  return ctx.startRendering()
 }

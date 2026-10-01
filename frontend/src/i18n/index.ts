@@ -33,7 +33,7 @@ export const i18n = createI18n({
 })
 
 export function setLocale(locale: LocaleCode) {
-  ;(i18n.global.locale as any).value = locale
+  i18n.global.locale.value = locale
   document.documentElement.lang = locale
   try {
     localStorage.setItem(STORAGE_KEY, locale)
@@ -43,5 +43,5 @@ export function setLocale(locale: LocaleCode) {
 }
 
 export function currentLocale(): LocaleCode {
-  return (i18n.global.locale as any).value
+  return i18n.global.locale.value === 'ru' ? 'ru' : 'en'
 }

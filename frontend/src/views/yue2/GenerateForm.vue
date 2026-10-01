@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useYue2Store } from '../../stores/yue2'
 import * as api from '../../api/yue2'
@@ -8,22 +8,11 @@ import ChipGroup from '../../components/shared/ChipGroup.vue'
 import CollapsibleDetails from '../../components/shared/CollapsibleDetails.vue'
 import HelpModal from '../../components/shared/HelpModal.vue'
 import TagInput from '../../components/shared/TagInput.vue'
+import VoiceSelect from '../../components/shared/VoiceSelect.vue'
+import { parseYue2Presets, samplingSettings, finiteNumber, SAMPLING_KEYS, type SamplingKey, type SamplingSettings, type Yue2Preset } from '../../composables/generationPresets'
 
 const store = useYue2Store()
 const { t, tm } = useI18n()
-
-interface Yue2Preset {
-  name: string
-  lyrics: string
-  style: string
-  cot: CotMode
-  precision: 'q8_0' | 'q4_0'
-  abc: string
-  cfgScale: number | null
-  numInferenceSteps: number | null
-  semantic: Record<string, number | null>
-  abcSampling: Record<string, number | null>
-}
 
 const presets = ref<Yue2Preset[]>([])
 const selectedPresetName = ref('')
@@ -33,7 +22,10 @@ const showPresetInput = ref(false)
 function loadPresets() {
   try {
     const raw = localStorage.getItem('yue2_presets')
-    if (raw) presets.value = JSON.parse(raw)
+    if (raw) {
+      const value: unknown = JSON.parse(raw)
+      presets.value = parseYue2Presets(value)
+    }
   } catch {}
 }
 
@@ -87,16 +79,22 @@ watch(
   () => store.pendingParamsInsert,
   (params) => {
     if (!params) return
-    if (params.lyrics != null) lyrics.value = params.lyrics
-    if (params.style != null) style.value = params.style
-    if (params.cot != null) cot.value = params.cot
-    if (params.precision != null) precision.value = params.precision
-    if (params.seed != null) seed.value = params.seed
-    if (params.abc != null) abc.value = params.abc
-    if (params.cfg_scale != null) cfgScale.value = params.cfg_scale
-    if (params.num_inference_steps != null) numInferenceSteps.value = params.num_inference_steps
-    if (params.semantic) Object.assign(semantic, params.semantic)
-    if (params.abc_sampling) Object.assign(abcSampling, params.abc_sampling)
+    if (typeof params.lyrics === 'string') lyrics.value = params.lyrics
+    if (typeof params.style === 'string') style.value = params.style
+    if (params.cot === 'off' || params.cot === 'melody' || params.cot === 'full') cot.value = params.cot
+    if (params.precision === 'q8_0' || params.precision === 'q4_0') precision.value = params.precision
+    if (finiteNumber(params.seed)) seed.value = params.seed
+    if (typeof params.abc === 'string') abc.value = params.abc
+    if (finiteNumber(params.cfg_scale)) cfgScale.value = params.cfg_scale
+    if (finiteNumber(params.num_inference_steps)) numInferenceSteps.value = params.num_inference_steps
+    if (params.semantic) Object.assign(semantic, samplingSettings(params.semantic))
+    if (params.abc_sampling) Object.assign(abcSampling, samplingSettings(params.abc_sampling))
+    for (const key of SAMPLING_KEYS) {
+      const semanticValue = params[`semantic_${key}`]
+      const abcValue = params[`abc_${key}`]
+      if (finiteNumber(semanticValue)) semantic[key] = semanticValue
+      if (finiteNumber(abcValue)) abcSampling[key] = abcValue
+    }
     store.clearPendingParamsInsert()
   },
 )
@@ -112,6 +110,9 @@ const unloadSheetSage = ref(true)
 const extracting = ref(false)
 const coverStatus = ref('')
 const coverError = ref('')
+let extractionGeneration = 0
+let extractionController: AbortController | undefined
+onBeforeUnmount(() => { extractionGeneration++; extractionController?.abort() })
 
 const seed = ref(831001)
 const randomSeed = ref(false)
@@ -119,10 +120,10 @@ const batchSize = ref<1 | 2 | 3 | 4>(1)
 
 const cfgScale = ref<number | null>(null)
 const numInferenceSteps = ref<number | null>(null)
-const semantic = reactive<Record<string, number | null>>({
+const semantic = reactive<SamplingSettings>({
   temperature: null, top_p: null, top_k: null, repetition_penalty: null, penalty_window: null, min_tokens: null, max_tokens: null,
 })
-const abcSampling = reactive<Record<string, number | null>>({
+const abcSampling = reactive<SamplingSettings>({
   temperature: null, top_p: null, top_k: null, repetition_penalty: null, penalty_window: null, min_tokens: null, max_tokens: null,
 })
 
@@ -140,7 +141,7 @@ const COT_HINTS = computed<Record<CotMode, string>>(() => ({
   melody: t('yueGen.cotHints.melody'),
   full: t('yueGen.cotHints.full'),
 }))
-const SAMPLING_FIELDS: { key: string; label: string; step: string }[] = [
+const SAMPLING_FIELDS: { key: SamplingKey; label: string; step: string }[] = [
   { key: 'temperature', label: 'Temperature', step: '0.01' },
   { key: 'top_p', label: 'Top-p', step: '0.01' },
   { key: 'top_k', label: 'Top-k', step: '1' },
@@ -161,39 +162,51 @@ watch(
 )
 
 function onCoverFileChange(e: Event) {
-  coverFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
+  coverFile.value = e.target instanceof HTMLInputElement ? e.target.files?.[0] ?? null : null
 }
 
 async function extractAbc() {
-  if (!coverFile.value) return
+  const file = coverFile.value
+  if (!file) return
+  const generation = ++extractionGeneration
+  const controller = new AbortController()
+  extractionController?.abort()
+  extractionController = controller
+  const isCurrent = () => generation === extractionGeneration && !controller.signal.aborted
   coverError.value = ''
   extracting.value = true
   coverStatus.value = t('yueGen.loadingSheetSage')
   try {
     const sheetSage = await api.getSheetSageModelSpec()
-    await api.ensureLoaded(sheetSage)
+    if (!isCurrent()) return
+    await api.ensureLoaded(sheetSage, undefined, controller.signal)
+    if (!isCurrent()) return
     coverStatus.value = t('yueGen.uploadingAudio')
-    const path = await api.uploadFile(coverFile.value)
+    const path = await api.uploadFile(file, controller.signal)
+    if (!isCurrent()) return
     coverStatus.value = t('yueGen.recognizingMelody')
-    const result = await api.runTask(sheetSage.id, { audio: path, options: {} })
+    const result = await api.runTask(sheetSage.id, { audio: path, options: {} }, controller.signal)
+    if (!isCurrent()) return
     const extracted = api.abcFromResult(result)
     if (!extracted.trim()) throw new Error(t('yueGen.noAbcReturned'))
     abc.value = extracted
     if (cot.value === 'off') cot.value = 'melody'
     coverStatus.value = t('yueGen.abcExtracted')
   } catch (err) {
+    if (!isCurrent()) return
     coverStatus.value = ''
     coverError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    if (unloadSheetSage.value) {
+    if (isCurrent() && unloadSheetSage.value) {
       try {
         const sheetSage = await api.getSheetSageModelSpec()
+        if (!isCurrent()) return
         await api.unloadModelId(sheetSage.id)
       } catch {
         // best-effort VRAM cleanup - a failed unload isn't user-actionable here
       }
     }
-    extracting.value = false
+    if (isCurrent()) extracting.value = false
   }
 }
 
@@ -246,6 +259,7 @@ async function submit() {
 <template>
   <div class="lg:sticky lg:top-20 lg:self-start">
     <div class="space-y-4 rounded-xl border border-border bg-panel p-4">
+      <VoiceSelect link />
       <button type="button" class="accent-gradient w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting" @click="submit">
         {{ submitting ? t('yueGen.submitting') : t('yueGen.submit') }}
       </button>
