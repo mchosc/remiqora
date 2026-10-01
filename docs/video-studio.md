@@ -2,6 +2,14 @@
 
 Create a saved project from a library song, define the direction, edit the storyboard, preview selected shots, and approve variants before export. Projects and jobs live in the data folder, independently of the browser. Changing the source audio requires a new project. Name and musical-marker edits preserve approved clips; changing generation inputs invalidates their approval. Export framing and timed text preserve clip approval and invalidate only the assembled output.
 
+## Managing saved projects
+
+Choose **Manage projects** beside the saved-project selector to open the project library above the wizard. Search by project/song name, filter by job status, and open, download or delete a project. The selected project is marked. Rename it in **1 Song**; use **Duplicate project for comparison** in **2 Direction** to retain the original while trying another approach.
+
+**Delete project** asks for confirmation with the project name. It permanently removes that project's saved storyboard, uploaded reference copies, preview variants and rendered video files. The source song and other projects remain in the library; files already downloaded elsewhere are unaffected. Open an active project and cancel its job before deleting it. The backend also drains owned image uploads and processing that raced with the request, and refuses deletion if a worker cannot be safely identified or stopped.
+
+Deleting the selected project returns the wizard to **1 Song**. Deleting another project retains the current draft and step. Pending autosaves finish before removal, stale polling cannot restore a removed entry, and failed deletion keeps the project and recoverable edits available for retry.
+
 ## Testing locally
 
 Install the updated backend dependencies in your existing backend environment, then restart the API and frontend. From the repository root:

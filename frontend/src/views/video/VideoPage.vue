@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useVideoWorkspace } from './useVideoWorkspace'
 import VideoPreviewPlayer from './VideoPreviewPlayer.vue'
+import VideoProjectLibrary from './VideoProjectLibrary.vue'
 import { videoWorkspaceSteps, videoClipLengths, changeShotLength, splitShot, duplicateShot, moveShot, newVideoId, frameTime, shotProblem, type VideoWorkspaceStep, type VideoClipLength } from './videoWorkspace'
 import { videoErrorText, videoRequestError, deleteVideo, isVideoActive } from '../../api/videos'
 import type { VideoProjectJob, VideoMarker } from '../../api/contracts'
@@ -13,7 +14,7 @@ import { notePhasePace, phaseRemaining, type VideoPhasePace } from './videoJobTi
 const { t } = useI18n()
 const { tracks, projects, legacyVideos, project, draft, step, selectedShotId, selectedPreviewIds, variantsPerShot, trackId,
   selectedTrack, selectedShot, savedShot, loading, acting, saving, dirty, error, saveError, serverBusy, readiness, now, undoStack, active, readOnly, problem, coverageEnd, approvalCount,
-  save, selectProject, reloadProject, createProject, preview, render, analyze, approve, resume, cancel, duplicate, exportVideo, upload, editShots, undo, addShot } = useVideoWorkspace()
+  save, selectProject, removeProject, reloadProject, createProject, preview, render, analyze, approve, resume, cancel, duplicate, exportVideo, upload, editShots, undo, addShot } = useVideoWorkspace()
 const ripple = ref(true)
 const audio = ref<HTMLAudioElement | null>(null)
 const position = ref(0)
@@ -27,12 +28,7 @@ const phasePace = ref<VideoPhasePace>()
 watch(() => project.value?.job, (job) => { phasePace.value = job ? notePhasePace(phasePace.value, job, Date.now()) : undefined }, { deep: true })
 const phaseEta = computed(() => project.value?.job ? phaseRemaining(phasePace.value, project.value.job, now.value) : null)
 const songSearch = ref('')
-const projectSearch = ref('')
-const projectFilter = ref('all')
-const projectPage = ref(1)
-const filteredProjects = computed(() => projects.value.filter((row) => (projectFilter.value === 'all' || (row.job?.status ?? 'draft') === projectFilter.value)
-  && `${row.name} ${row.track_title} ${row.mode}`.toLowerCase().includes(projectSearch.value.toLowerCase())))
-const visibleProjects = computed(() => filteredProjects.value.slice((projectPage.value - 1) * 10, projectPage.value * 10))
+const projectManagerOpen = ref(false)
 const searchedTracks = computed(() => tracks.value.filter((track) => `${track.title} ${track.filename} ${track.short_id ?? ''}`.toLowerCase().includes(songSearch.value.toLowerCase())))
 const engineOption = computed(() => readiness.value?.options.find((option) => option.id === (draft.value?.settings.engine_pack ?? 'ltx23')))
 const generatedMode = computed(() => draft.value?.mode === 'generated')
@@ -81,6 +77,7 @@ function stepKey(event: KeyboardEvent, index: number) {
   if (next) { step.value = next; document.getElementById(`video-step-${next}`)?.focus() }
 }
 function stepDone(value: VideoWorkspaceStep) {
+  if (!project.value || !draft.value) return false
   return value === 'song' ? Boolean(project.value) : value === 'direction' ? Boolean(draft.value?.direction || draft.value?.mode !== 'generated')
     : value === 'storyboard' ? validShots.value : value === 'preview' ? approvalCount.value > 0 && approvalCount.value === draft.value?.shots.length : Boolean(project.value?.file_url)
 }
@@ -134,7 +131,6 @@ async function removeLegacy(id: string) {
 }
 function jobDetail(job: VideoProjectJob) { return [job.phase || t(`videoWorkspace.operations.${job.operation}`), job.shot_count ? `${job.shot_index ?? 0} / ${job.shot_count}` : ''].filter(Boolean).join(' · ') }
 watch([search, statusFilter], () => { page.value = 1 })
-watch([projectSearch, projectFilter], () => { projectPage.value = 1 })
 watch(generatedMode, (generated) => { if (!generated && variantsPerShot.value > 2) variantsPerShot.value = 2 })
 function stopSource() { playbackGeneration++; if (audio.value) { audio.value.pause(); releasePlaybackIfCurrent(audio.value) } }
 watch(() => selectedTrack.value?.audio_url, () => { stopSource(); position.value = 0; auditionEnd.value = null; audioError.value = '' })
@@ -145,10 +141,14 @@ onBeforeUnmount(stopSource)
   <div class="video-workspace mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
     <header class="flex flex-wrap items-start justify-between gap-3">
       <div><h1 class="text-2xl font-semibold">{{ t('videoWorkspace.title') }}</h1><p class="mt-1 text-sm text-text-dim">{{ t('videoWorkspace.intro') }}</p></div>
-      <label v-if="projects.length" class="text-sm">{{ t('videoWorkspace.project') }}
-        <select :value="project?.id" :disabled="acting || saving" @change="chooseProject"><option v-for="row in projects" :key="row.id" :value="row.id">{{ row.name }} · {{ row.track_title }}</option></select>
-      </label>
+      <div class="flex flex-wrap items-end gap-2">
+        <label v-if="projects.length" class="text-sm">{{ t('videoWorkspace.project') }}
+          <select :value="project?.id ?? ''" :disabled="acting || saving" @change="chooseProject"><option value="" disabled>{{ t('videoWorkspace.noProject') }}</option><option v-for="row in projects" :key="row.id" :value="row.id">{{ row.name }} · {{ row.track_title }}</option></select>
+        </label>
+        <button type="button" :aria-expanded="projectManagerOpen" aria-controls="video-project-library" :disabled="acting || saving" @click="projectManagerOpen = !projectManagerOpen">{{ t('videoWorkspace.manageProjects') }}</button>
+      </div>
     </header>
+    <VideoProjectLibrary v-if="projectManagerOpen" :projects="projects" :selected-id="project?.id" :busy="acting || saving" @open="selectProject" @delete="removeProject" />
     <div class="video-step-status sticky z-10 space-y-2 rounded-xl bg-panel p-3 shadow-sm">
       <nav role="tablist" :aria-label="t('videoWorkspace.steps')" class="grid grid-cols-5 gap-1">
         <button v-for="(item, index) in videoWorkspaceSteps" :id="`video-step-${item}`" :key="item" role="tab" :aria-label="`${index + 1} ${t(`videoWorkspace.${item}`)}`" :aria-controls="`video-panel-${item}`" :aria-selected="step === item" :tabindex="step === item ? 0 : -1"
@@ -263,7 +263,6 @@ onBeforeUnmount(stopSource)
       <p v-else class="text-text-dim">{{ t('videoWorkspace.chooseSong') }} <button @click="step = 'song'">{{ t('videoWorkspace.song') }}</button></p>
     </section>
     <template v-for="item in videoWorkspaceSteps" :key="item"><div v-if="item !== step" :id="`video-panel-${item}`" role="tabpanel" :aria-labelledby="`video-step-${item}`" hidden></div></template>
-    <details v-if="projects.length" class="rounded-xl bg-panel p-4"><summary>{{ t('videoWorkspace.projectLibrary') }} ({{ projects.length }})</summary><div class="mt-4 grid gap-3 sm:grid-cols-2"><label>{{ t('videoWorkspace.searchProjects') }}<input v-model="projectSearch" type="search"></label><label>{{ t('videoWorkspace.filter') }}<select v-model="projectFilter"><option value="all">{{ t('videoWorkspace.all') }}</option><option v-for="status in ['draft', 'ready', 'failed', 'cancelled', 'running', 'queued']" :key="status" :value="status">{{ t(`videoWorkspace.status.${status}`) }}</option></select></label></div><ul class="mt-4 grid gap-4 sm:grid-cols-2"><li v-for="row in visibleProjects" :key="row.id" class="rounded-lg bg-panel-2 p-3 space-y-2"><img v-if="row.poster_url" :src="row.poster_url" :alt="row.name" loading="lazy" class="h-32 w-full rounded object-cover"><strong>{{ row.name }}</strong><p class="text-sm text-text-dim">{{ row.track_title }} · {{ clockText(row.duration_sec) }} · {{ t(`videoWorkspace.status.${row.job?.status ?? 'draft'}`) }} · {{ t('video.shotCount', { count: row.shots?.length ?? 0 }) }}</p><div class="flex gap-2"><button :disabled="acting || saving" @click="selectProject(row.id)">{{ t('videoWorkspace.openProject') }}</button><a v-if="row.file_url" :href="row.file_url" download>{{ t('common.download') }}</a></div></li></ul><div class="mt-3 flex justify-between"><button :disabled="projectPage <= 1" @click="projectPage--">{{ t('videoWorkspace.previous') }}</button><span>{{ projectPage }} / {{ Math.max(1, Math.ceil(filteredProjects.length / 10)) }}</span><button :disabled="projectPage * 10 >= filteredProjects.length" @click="projectPage++">{{ t('videoWorkspace.next') }}</button></div></details>
     <details v-if="legacyVideos.length" class="rounded-xl bg-panel p-4"><summary>{{ t('videoWorkspace.previousVideos') }} ({{ legacyVideos.length }})</summary><div class="mt-4 grid gap-3 sm:grid-cols-2"><label>{{ t('videoWorkspace.search') }}<input v-model="search" type="search"></label><label>{{ t('videoWorkspace.filter') }}<select v-model="statusFilter"><option value="all">{{ t('videoWorkspace.all') }}</option><option v-for="status in ['ready', 'failed', 'cancelled', 'running', 'queued']" :key="status" :value="status">{{ t(`videoWorkspace.status.${status}`) }}</option></select></label></div><ul class="mt-4 grid gap-4 md:grid-cols-2"><li v-for="row in visibleVideos" :key="row.id" class="rounded-lg bg-panel-2 p-3 space-y-2"><strong>{{ row.title }}</strong> · {{ t(`videoWorkspace.status.${row.status}`) }}<VideoPreviewPlayer v-if="row.status === 'ready' && row.file_url" :src="row.file_url" :label="row.title" /><p v-if="row.error_code" class="text-status-failed">{{ videoErrorText(row.error_code) }}</p><div class="flex gap-2"><a v-if="row.file_url" :href="row.file_url" download>{{ t('common.download') }}</a><button :disabled="isVideoActive(row.status)" @click="removeLegacy(row.id)">{{ t('video.delete') }}</button></div></li></ul><div class="mt-3 flex justify-between"><button :disabled="page <= 1" @click="page--">{{ t('videoWorkspace.previous') }}</button><span>{{ page }} / {{ Math.max(1, Math.ceil(filteredVideos.length / 10)) }}</span><button :disabled="page * 10 >= filteredVideos.length" @click="page++">{{ t('videoWorkspace.next') }}</button></div></details>
   </div>
 </template>

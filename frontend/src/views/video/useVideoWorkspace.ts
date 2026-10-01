@@ -1,6 +1,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { listTracks, type SavedTrack } from '../../api/tracks'
 import * as api from '../../api/videos'
+import { ApiError } from '../../api/http'
+import { i18n } from '../../i18n'
 import { parseUpdateVideoProjectRequest, type VideoReadinessResponse, type UpdateVideoProjectRequest, type VideoProject, type VideoProjectSettings, type VideoExportSettings, type VideoMarker, type VideoOverlay, type VideoShotDraft } from '../../api/contracts'
 import { createPollingLoop } from '../../composables/polling'
 import { newVideoId, toShotDraft, shotProblem, frameTime, type VideoWorkspaceStep } from './videoWorkspace'
@@ -81,6 +83,7 @@ export function useVideoWorkspace() {
   let clock: ReturnType<typeof setInterval> | undefined
   let savePromise: Promise<boolean> | undefined
   let actionController: AbortController | undefined
+  let deletingProjectId: string | undefined
   const lifetime = new AbortController()
 
   function putProject(row: VideoProject) {
@@ -88,7 +91,7 @@ export function useVideoWorkspace() {
     if (index >= 0) projects.value.splice(index, 1, row)
     else projects.value.unshift(row)
   }
-  function setDraft(value: VideoDraft) {
+  function setDraft(value: VideoDraft | null) {
     suppressWatch = true
     draft.value = value
     suppressWatch = false
@@ -139,7 +142,7 @@ export function useVideoWorkspace() {
   }, { deep: true, flush: 'sync' })
 
   async function save(): Promise<boolean> {
-    if (!alive) return false
+    if (!alive || deletingProjectId !== undefined) return false
     if (savePromise) { const ok = await savePromise; if (!ok) return false; if (dirty.value && alive) return save(); return !dirty.value }
     if (!dirty.value) return true
     if (!project.value || !draft.value || active.value) return false
@@ -191,6 +194,61 @@ export function useVideoWorkspace() {
       activate(row, false)
     } catch (cause) { if (alive && token === generation) error.value = api.videoRequestError(cause) }
     finally { if (alive) acting.value = false }
+  }
+  async function removeProject(id: string): Promise<boolean> {
+    if (!alive || acting.value || loading.value) return false
+    const row = project.value?.id === id ? project.value : projects.value.find((item) => item.id === id)
+    if (!row || api.isVideoActive(row.job?.status)) return false
+    const selected = project.value?.id === id
+    acting.value = true
+    deletingProjectId = id
+    error.value = ''
+    let token = generation
+    acceptedVersion++
+    if (saveTimer !== undefined) { clearTimeout(saveTimer); saveTimer = undefined }
+    actionController?.abort()
+    const controller = new AbortController()
+    actionController = controller
+    try {
+      // An accepted save must settle before deletion can remove its destination.
+      if (savePromise) await savePromise
+      if (!alive || token !== generation) return false
+      token = ++generation
+      error.value = ''
+      await api.deleteVideoProject(id, controller.signal)
+      if (!alive || token !== generation) return false
+      projects.value = projects.value.filter((item) => item.id !== id)
+      try { sessionStorage.removeItem(draftKey(id)) } catch { /* Server removal remains authoritative. */ }
+      if (selected) {
+        project.value = null
+        setDraft(null)
+        dirty.value = false
+        saveError.value = ''
+        selectedShotId.value = ''
+        selectedPreviewIds.value = []
+        undoStack.value = []
+        variantsPerShot.value = 1
+        step.value = 'song'
+      }
+      return true
+    } catch (cause) {
+      if (alive && token === generation) {
+        error.value = cause instanceof ApiError && i18n.global.te(`video.err.${cause.message}`)
+          ? cause.message : 'project_delete_failed'
+      }
+      return false
+    } finally {
+      deletingProjectId = undefined
+      if (alive) {
+        generation++
+        acceptedVersion++
+        acting.value = false
+        if (dirty.value && !active.value) {
+          if (saveTimer !== undefined) clearTimeout(saveTimer)
+          saveTimer = setTimeout(() => { void save() }, 500)
+        }
+      }
+    }
   }
   async function createProject() {
     if (!trackId.value || acting.value) return
@@ -275,7 +333,7 @@ export function useVideoWorkspace() {
         else if (revisionChanged && !saving.value && !acting.value) saveError.value = 'revision_conflict'
       }
       now.value = Date.now()
-    } catch (cause) { if (isCurrent() && alive) error.value = api.videoRequestError(cause) }
+    } catch (cause) { if (isCurrent() && alive && token === generation) error.value = api.videoRequestError(cause) }
   }, 2000)
   onMounted(async () => {
     loading.value = true
@@ -294,5 +352,5 @@ export function useVideoWorkspace() {
   onUnmounted(() => { alive = false; generation++; lifetime.abort(); actionController?.abort(); loop.stop(); if (clock !== undefined) clearInterval(clock); if (saveTimer !== undefined) clearTimeout(saveTimer) })
   return { tracks, projects, legacyVideos, project, draft, step, selectedShotId, selectedPreviewIds, variantsPerShot, trackId,
     selectedTrack, selectedShot, savedShot, loading, acting, saving, dirty, error, saveError, serverBusy, readiness, now, undoStack, active, readOnly, problem, coverageEnd, approvalCount,
-    save, selectProject, reloadProject, createProject, action, preview, render, analyze, approve, resume, cancel, duplicate, exportVideo, upload, editShots, undo, addShot }
+    save, selectProject, reloadProject, removeProject, createProject, action, preview, render, analyze, approve, resume, cancel, duplicate, exportVideo, upload, editShots, undo, addShot }
 }

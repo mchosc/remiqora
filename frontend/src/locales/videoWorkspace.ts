@@ -1,4 +1,5 @@
 export const videoErrorsEn = {
+  project_delete_failed: 'Could not delete this project. Retry when the backend is available.',
   image_tools_unavailable: 'Timed text tools are unavailable. Install Pillow in the backend environment or turn off timed text.',
   source_missing: 'The source song is unavailable. Restore the audio file or create a project with an available song.',
   unsupported_platform: 'Generated scenes require Apple Silicon with MLX. Animated covers and visualizers remain available on the CPU.',
@@ -22,6 +23,7 @@ export const videoErrorsEn = {
   visual_quality_unverified: 'Visual quality and GPU memory use require testing with your material.', lyrics_require_explicit_timing: 'Titles and lyrics use the start and end times you enter.',
 }
 export const videoErrorsRu: { [K in keyof typeof videoErrorsEn]: string } = {
+  project_delete_failed: 'Не удалось удалить проект. Повторите попытку, когда бэкенд будет доступен.',
   image_tools_unavailable: 'Инструменты текста недоступны. Установите Pillow в окружении бэкенда или отключите текст.',
   source_missing: 'Исходная песня недоступна. Восстановите аудиофайл или создайте проект с доступной песней.',
   unsupported_platform: 'Генерация сцен требует Apple Silicon с MLX. Анимированные обложки и визуализаторы доступны на CPU.',
@@ -56,6 +58,9 @@ export const videoWorkspaceEn = {
   textDependencyHint: 'Timed text needs Pillow and a usable font in the backend environment. Install the declared backend dependencies, or turn off timed text for this export.',
   firstImage: 'Use first uploaded image', imageMotionHint: 'Image-based modes use the assigned image or the first uploaded image. Seeds choose between two camera directions; prompts, generation settings and reference influence do not affect this motion.',
   projectLibrary: 'Project library', searchProjects: 'Search projects', openProject: 'Open project',
+  manageProjects: 'Manage projects', selectedProject: 'Selected project', deleteProject: 'Delete project', openProjectNamed: 'Open project {name}', deleteProjectNamed: 'Delete project {name}', downloadProject: 'Download project video {name}',
+  confirmDeleteProject: 'Delete “{name}”? This permanently removes its project files, references, previews and renders. The source song is kept.',
+  cancelBeforeDelete: 'Open this project and cancel its active job before deleting it.', noMatchingProjects: 'No projects match your search or status filter.', noSavedProjects: 'No saved video projects yet.',
   playbackFailed: 'This video could not be played in the browser. Download it to inspect the file.',
   discardReload: 'Discard edits and reload saved project',
   spent: 'Time spent: {time}', operations: { preview: 'Preview', render: 'Render', export: 'Export' },
@@ -90,6 +95,9 @@ export const videoWorkspaceRu: { [K in keyof typeof videoWorkspaceEn]: K extends
   textDependencyHint: 'Для текста нужны Pillow и доступный шрифт в окружении бэкенда. Установите заявленные зависимости или отключите текст для этого экспорта.',
   firstImage: 'Первое загруженное изображение', imageMotionHint: 'Режимы с изображением используют назначенное или первое загруженное изображение. Сид выбирает одно из двух направлений камеры; описания, настройки генерации и влияние референса не меняют это движение.',
   projectLibrary: 'Библиотека проектов', searchProjects: 'Поиск проектов', openProject: 'Открыть проект',
+  manageProjects: 'Управление проектами', selectedProject: 'Выбранный проект', deleteProject: 'Удалить проект', openProjectNamed: 'Открыть проект {name}', deleteProjectNamed: 'Удалить проект {name}', downloadProject: 'Скачать видео проекта {name}',
+  confirmDeleteProject: 'Удалить «{name}»? Файлы проекта, референсы, превью и результаты рендера будут удалены навсегда. Исходная песня сохраняется.',
+  cancelBeforeDelete: 'Откройте проект и отмените его активную задачу перед удалением.', noMatchingProjects: 'Нет проектов, соответствующих поиску или выбранному статусу.', noSavedProjects: 'Сохранённых видеопроектов пока нет.',
   playbackFailed: 'Браузер не смог воспроизвести видео. Скачайте файл для проверки.',
   discardReload: 'Отбросить правки и загрузить сохранённый проект',
   spent: 'Затрачено: {time}', operations: { preview: 'Проверка', render: 'Рендер', export: 'Экспорт' },

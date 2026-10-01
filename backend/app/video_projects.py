@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio, hashlib, logging, math, os, re, shutil, tempfile, threading, uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import UploadFile
@@ -22,12 +23,14 @@ from .video_contracts import (
     VideoExportSettings,
 )
 from .video_media import tool, probe_media
-from .job_lifecycle import spawn_process, communicate_process
+from .job_lifecycle import await_cleanup, kill_process_tree, spawn_process, communicate_process
 from .video_process import WorkerIdentity
 
 logger = logging.getLogger(__name__)
 _lock = threading.RLock()
 _deleting: set[str] = set()
+_reference_tasks: dict[str, dict[asyncio.Task[VideoProject], _ReferenceUploadState]] = {}
+_reference_cancelling: dict[str, int] = {}
 _ID = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -35,6 +38,12 @@ class VideoProjectError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass
+class _ReferenceUploadState:
+    started: bool = False
+    cancel_requested: bool = False
 
 
 class SourceIdentity(VideoContract):
@@ -450,17 +459,134 @@ def duplicate(project_id: str, body: VideoRevisionRequest) -> VideoProject:
 async def upload_reference(
     project_id: str, revision: int, upload: UploadFile
 ) -> VideoProject:
-    get(project_id)
+    task: asyncio.Task[VideoProject] | None = None
+    state = _ReferenceUploadState()
+    try:
+        # Admission and registration share the deletion gate's lock. The owned
+        # task includes process and file cleanup even if its HTTP caller leaves.
+        with _lock:
+            ensure_open(project_id)
+            load(project_id)
+            if project_id in _reference_cancelling:
+                raise VideoProjectError("busy")
+            if any(_reference_cleanup_failed(item) for item in _reference_tasks.get(project_id, ())):
+                raise VideoProjectError("cleanup_failed")
+            task = asyncio.create_task(_upload_reference(project_id, revision, upload, state))
+            _reference_tasks.setdefault(project_id, {})[task] = state
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if task is not None and not task.done():
+            _cancel_reference(task, state)
+            await await_cleanup(asyncio.gather(task, return_exceptions=True))
+        raise
+    finally:
+        if task is None:
+            await await_cleanup(upload.close())
+        elif task.done() and not _reference_cleanup_failed(task):
+            with _lock:
+                owned = _reference_tasks.get(project_id)
+                if owned is not None:
+                    owned.pop(task, None)
+                    if not owned:
+                        _reference_tasks.pop(project_id, None)
+
+
+def _reference_cleanup_failed(task: asyncio.Task[VideoProject]) -> bool:
+    if not task.done() or task.cancelled():
+        return False
+    failure = task.exception()
+    return isinstance(failure, VideoProjectError) and failure.code == "cleanup_failed"
+
+
+def _cancel_reference(task: asyncio.Task[VideoProject], state: _ReferenceUploadState) -> None:
+    if task.done():
+        return
+    # Cancelling an unstarted Task prevents its finally from ever running.
+    # Let it enter the cleanup scope and observe the request before doing work.
+    if not state.started:
+        state.cancel_requested = True
+    elif not task.cancelling():
+        task.cancel()
+
+
+def reference_project_ids() -> set[str]:
+    with _lock:
+        return set(_reference_tasks)
+
+
+def request_reference_shutdown() -> None:
+    with _lock:
+        for owned in _reference_tasks.values():
+            for task, state in owned.items():
+                _cancel_reference(task, state)
+
+
+def request_reference_cancel(project_id: str) -> tuple[asyncio.Task[VideoProject], ...]:
+    with _lock:
+        _reference_cancelling[project_id] = _reference_cancelling.get(project_id, 0) + 1
+        owned = _reference_tasks.get(project_id, {})
+        pending = tuple(owned)
+        for task, state in owned.items():
+            _cancel_reference(task, state)
+        return pending
+
+
+async def drain_reference_uploads(
+    project_id: str, pending: tuple[asyncio.Task[VideoProject], ...]
+) -> None:
+    try:
+        results = await await_cleanup(asyncio.gather(*pending, return_exceptions=True))
+        if any(isinstance(result, VideoProjectError) and result.code == "cleanup_failed" for result in results):
+            raise VideoProjectError("cleanup_failed")
+    finally:
+        with _lock:
+            remaining = _reference_cancelling[project_id] - 1
+            if remaining:
+                _reference_cancelling[project_id] = remaining
+            else:
+                _reference_cancelling.pop(project_id)
+
+
+async def _cleanup_reference(
+    proc: asyncio.subprocess.Process | None,
+    temporary: Path | None,
+    output: Path | None,
+    published: bool,
+    upload: UploadFile,
+) -> None:
+    try:
+        try:
+            await kill_process_tree(proc)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if not published and output is not None:
+                output.unlink(missing_ok=True)
+        finally:
+            await upload.close()
+    except Exception as exc:
+        logger.exception("Reference upload cleanup failed")
+        raise VideoProjectError("cleanup_failed") from exc
+
+
+async def _upload_reference(
+    project_id: str, revision: int, upload: UploadFile, state: _ReferenceUploadState
+) -> VideoProject:
     name = upload.filename or "reference"
-    if len(name) > 160 or "/" in name or "\\" in name or name in {".", ".."}:
-        raise VideoProjectError("invalid_reference")
     reference_id = uuid.uuid4().hex
-    root = project_dir(project_id)
-    temporary = root / f".{reference_id}.upload"
-    output = artifact(project_id, f"references/{reference_id}.png")
+    temporary: Path | None = None
+    output: Path | None = None
     count = 0
     published = False
+    proc: asyncio.subprocess.Process | None = None
     try:
+        state.started = True
+        if state.cancel_requested:
+            raise asyncio.CancelledError
+        if len(name) > 160 or "/" in name or "\\" in name or name in {".", ".."}:
+            raise VideoProjectError("invalid_reference")
+        root = project_dir(project_id)
+        temporary = root / f".{reference_id}.upload"
+        output = artifact(project_id, f"references/{reference_id}.png")
         with temporary.open("wb") as handle:
             while chunk := await upload.read(65536):
                 count += len(chunk)
@@ -520,10 +646,7 @@ async def upload_reference(
         published = True
         return result
     finally:
-        temporary.unlink(missing_ok=True)
-        if not published:
-            output.unlink(missing_ok=True)
-        await upload.close()
+        await await_cleanup(_cleanup_reference(proc, temporary, output, published, upload))
 
 
 def reference_file(project_id: str, reference_id: str) -> Path:

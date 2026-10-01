@@ -11,7 +11,7 @@ import type { VideoProject } from '../../api/contracts'
 import { videoProjectFixture, videoTrack, videoReadinessFixture } from './videoFixtures'
 
 vi.mock('../../api/tracks', async (original) => ({ ...await original<typeof import('../../api/tracks')>(), listTracks: vi.fn() }))
-vi.mock('../../api/videos', async (original) => ({ ...await original<typeof import('../../api/videos')>(), listVideoProjects: vi.fn(), getVideoProject: vi.fn(), listVideos: vi.fn(), otherWorkBusy: vi.fn(), videoReadiness: vi.fn(), createVideoProject: vi.fn(), updateVideoProject: vi.fn(), analyzeVideoProject: vi.fn(), previewVideoProject: vi.fn(), renderVideoProject: vi.fn(), exportVideoProject: vi.fn(), uploadVideoReference: vi.fn() }))
+vi.mock('../../api/videos', async (original) => ({ ...await original<typeof import('../../api/videos')>(), listVideoProjects: vi.fn(), getVideoProject: vi.fn(), deleteVideoProject: vi.fn(), listVideos: vi.fn(), otherWorkBusy: vi.fn(), videoReadiness: vi.fn(), createVideoProject: vi.fn(), updateVideoProject: vi.fn(), analyzeVideoProject: vi.fn(), previewVideoProject: vi.fn(), renderVideoProject: vi.fn(), exportVideoProject: vi.fn(), uploadVideoReference: vi.fn() }))
 let app: App | undefined
 let project: VideoProject
 beforeEach(() => {
@@ -30,7 +30,7 @@ beforeEach(() => {
   })
   vi.mocked(api.previewVideoProject).mockImplementation(async () => project)
 })
-afterEach(() => { app?.unmount(); app = undefined; document.body.replaceChildren(); sessionStorage.clear(); vi.clearAllMocks(); vi.useRealTimers() })
+afterEach(() => { app?.unmount(); app = undefined; document.body.replaceChildren(); sessionStorage.clear(); vi.clearAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 async function flush() { for (let i = 0; i < 12; i++) await nextTick() }
 async function mount() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: VideoPage }] })
@@ -50,6 +50,83 @@ it('shows the numbered project progression and an audio source player', async ()
   expect(document.querySelectorAll('[role=tab]')).toHaveLength(5)
   expect(document.body.textContent).toContain('Storyboard')
   expect(document.querySelector('audio')?.getAttribute('src')).toBe('/api/tracks/1/audio')
+})
+
+it('toggles the project manager beside the selector and shows the library above the wizard', async () => {
+  await mount()
+  const manager = button('Manage projects')
+  expect(manager.closest('header')).not.toBeNull()
+  expect(manager.getAttribute('aria-expanded')).toBe('false')
+  expect(document.querySelector('[data-video-project-library]')).toBeNull()
+  manager.click(); await flush()
+  expect(manager.getAttribute('aria-expanded')).toBe('true')
+  const library = document.querySelector('[data-video-project-library]')
+  const wizard = document.querySelector('[role=tablist]')
+  if (!library || !wizard) throw new Error('Missing manager or wizard')
+  expect(library.compareDocumentPosition(wizard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect([...document.querySelectorAll('details > summary')].some(element => element.textContent?.includes('Project library'))).toBe(false)
+  manager.click(); await flush()
+  expect(document.querySelector('[data-video-project-library]')).toBeNull()
+})
+
+it('deletes only the named confirmed project and keeps cancellation silent', async () => {
+  const other = { ...videoProjectFixture('e'.repeat(32)), name: 'Other video' }
+  vi.mocked(api.listVideoProjects).mockResolvedValue({ projects: [project, other] })
+  vi.mocked(api.deleteVideoProject).mockResolvedValue(undefined)
+  const confirm = vi.fn(() => false); vi.stubGlobal('confirm', confirm)
+  await mount(); button('Manage projects').click(); await flush()
+  const row = document.querySelector(`[data-video-project="${other.id}"]`)
+  const remove = row?.querySelector<HTMLButtonElement>('[data-delete-project]')
+  if (!remove) throw new Error('Missing project deletion')
+  remove.click(); await flush()
+  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Other video'))
+  expect(api.deleteVideoProject).not.toHaveBeenCalled()
+  confirm.mockReturnValue(true); remove.click(); await flush()
+  expect(api.deleteVideoProject).toHaveBeenCalledWith(other.id, expect.any(AbortSignal))
+  expect(document.querySelector(`[data-video-project="${other.id}"]`)).toBeNull()
+  expect(document.querySelector('[data-testid=video-global-status]')?.textContent).toContain(project.name)
+})
+
+it('shows a stable deletion failure and leaves its project available', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true))
+  vi.mocked(api.deleteVideoProject).mockRejectedValue(new Error('/private/project/path'))
+  await mount(); button('Manage projects').click(); await flush()
+  document.querySelector<HTMLButtonElement>('[data-delete-project]')?.click(); await flush()
+  expect(document.querySelector(`[data-video-project="${project.id}"]`)).not.toBeNull()
+  expect([...document.querySelectorAll('[role=alert]')].map(element => element.textContent).join(' ')).toContain('Could not delete this project')
+  expect(document.body.textContent).not.toContain('/private/project/path')
+})
+
+it('keeps the manager open with an empty message after deleting its last project', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true))
+  vi.mocked(api.deleteVideoProject).mockResolvedValue(undefined)
+  await mount(); button('3 Storyboard').click(); await flush()
+  button('Manage projects').click(); await flush()
+  document.querySelector<HTMLButtonElement>('[data-delete-project]')?.click(); await flush()
+  expect(document.querySelector('[data-video-project-library]')).not.toBeNull()
+  expect(document.body.textContent).toContain('No saved video projects yet')
+  expect(document.querySelector('[role=tab][aria-selected=true]')?.textContent).toContain('Song')
+  expect(document.querySelector('[data-testid=video-global-status]')?.textContent).toContain('Choose a song to begin')
+  expect([...document.querySelectorAll('[role=tab]')].some(tab => tab.textContent?.includes('✓'))).toBe(false)
+})
+
+it('shows no completed wizard steps before a project exists', async () => {
+  vi.mocked(api.listVideoProjects).mockResolvedValueOnce({ projects: [] })
+  await mount()
+  expect([...document.querySelectorAll('[role=tab]')].some(tab => tab.textContent?.includes('✓'))).toBe(false)
+})
+
+it('disables manager and row actions until a deletion settles', async () => {
+  let finish: () => void = () => { throw new Error('Not initialized') }
+  vi.stubGlobal('confirm', vi.fn(() => true))
+  vi.mocked(api.deleteVideoProject).mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+  await mount(); const manager = button('Manage projects'); manager.click(); await flush()
+  document.querySelector<HTMLButtonElement>('[data-delete-project]')?.click(); await flush()
+  expect(manager.disabled).toBe(true)
+  expect(document.querySelector<HTMLButtonElement>('[data-open-project]')?.disabled).toBe(true)
+  expect(document.querySelector<HTMLButtonElement>('[data-delete-project]')?.disabled).toBe(true)
+  finish(); await flush()
+  expect(manager.disabled).toBe(false)
 })
 it('previews only the selected shot without rendering the whole song', async () => {
   await mount()

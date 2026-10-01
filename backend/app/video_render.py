@@ -1236,6 +1236,7 @@ async def cancel(project_id: str) -> VideoProject:
         measurement = _analysis_tasks.get(project_id)
         job = store.get(project_id).job
         _cancelling[project_id] = _cancelling.get(project_id, 0) + 1
+        references = store.request_reference_cancel(project_id)
         request_cancel(task)
         if (
             measurement is not None
@@ -1245,6 +1246,7 @@ async def cancel(project_id: str) -> VideoProject:
             measurement.cancel()
     try:
         pending: list[asyncio.Task[None] | asyncio.Task[VideoSongAnalysis]] = []
+        pending.append(asyncio.create_task(store.drain_reference_uploads(project_id, references)))
         if task is not None:
             pending.append(task)
         if measurement is not None:
@@ -1283,7 +1285,7 @@ async def delete(project_id: str) -> None:
         store.begin_delete(project_id)
     try:
         await cancel(project_id)
-        if project_id in _unverified:
+        if project_id in _unverified or store.load(project_id).worker is not None:
             raise store.VideoProjectError("worker_identity_unverified")
         shutil.rmtree(store.project_dir(project_id))
     except OSError as exc:
@@ -1293,6 +1295,7 @@ async def delete(project_id: str) -> None:
 
 
 def request_shutdown() -> None:
+    store.request_reference_shutdown()
     for task in _tasks.values():
         request_cancel(task)
     for measurement in _analysis_tasks.values():
@@ -1304,7 +1307,7 @@ async def shutdown() -> None:
     request_shutdown()
     results = await await_cleanup(
         asyncio.gather(
-            *(cancel(project_id) for project_id in set(_tasks) | set(_analysis_tasks)),
+            *(cancel(project_id) for project_id in set(_tasks) | set(_analysis_tasks) | store.reference_project_ids()),
             return_exceptions=True,
         )
     )

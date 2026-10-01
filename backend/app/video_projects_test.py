@@ -145,6 +145,22 @@ class VideoProjectTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(list(self.p.project_dir(project.id).glob("*.upload")), [])
 
+    async def test_reference_path_rejection_closes_upload_and_releases_owner(self) -> None:
+        from fastapi import UploadFile
+        from app.video_contracts import CreateVideoProjectRequest
+
+        project = await self.p.create(CreateVideoProjectRequest(track_id=1))
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.p.project_dir(project.id) / "references").symlink_to(outside, target_is_directory=True)
+        upload = UploadFile(io.BytesIO(b"untrusted payload"), filename="reference.png")
+        with self.assertRaises(self.p.VideoProjectError) as failure:
+            await self.p.upload_reference(project.id, project.revision, upload)
+        self.assertEqual(failure.exception.code, "not_found")
+        self.assertTrue(upload.file.closed)
+        self.assertNotIn(project.id, self.p.reference_project_ids())
+        self.assertEqual(list(outside.iterdir()), [])
+
     async def test_reference_revision_conflict_removes_only_unpublished_upload(self) -> None:
         from fastapi import UploadFile
         from PIL import Image

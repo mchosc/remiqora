@@ -16,6 +16,7 @@ from app.video_contracts import (
     ApproveVideoVariantRequest,
     VideoExportRequest,
     VideoExportSettings,
+    VideoProject,
 )
 
 
@@ -409,6 +410,357 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             self.r._analysis_tasks.pop(self.project.id, None)
+
+    async def test_delete_drains_reference_probe_and_preserves_source_song(self) -> None:
+        from app.video_media import MediaInfo
+
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+        before = self.audio.read_bytes()
+
+        async def delayed_probe(_path: Path) -> MediaInfo:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+            return MediaInfo(80, 60, 0, 0, 0)
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "probe_media", side_effect=delayed_probe):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            await started.wait()
+            try:
+                await self.r.delete(self.project.id)
+                self.assertTrue(pending.done(), "DELETE returned while its reference upload could still write")
+                self.assertTrue(cleaned.is_set())
+                self.assertTrue(upload.file.closed)
+                self.assertFalse(self.p.project_dir(self.project.id).exists())
+                self.assertEqual(self.audio.read_bytes(), before)
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+    async def test_delete_terminates_reference_encoder_before_removing_project(self) -> None:
+        from app.job_lifecycle import spawn_process
+        from app.video_media import MediaInfo
+
+        started = asyncio.Event()
+        workers: list[asyncio.subprocess.Process] = []
+
+        async def encoder(*_argv: str, stdout: int, stderr: int) -> asyncio.subprocess.Process:
+            proc = await spawn_process(sys.executable, "-c", "import time; time.sleep(30)", stdout=stdout, stderr=stderr)
+            workers.append(proc)
+            started.set()
+            return proc
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)), patch.object(self.p, "spawn_process", side_effect=encoder):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            await started.wait()
+            try:
+                await self.r.delete(self.project.id)
+                self.assertTrue(pending.done(), "DELETE returned before reference encoder cleanup")
+                self.assertIsNotNone(workers[0].returncode)
+                self.assertTrue(upload.file.closed)
+                self.assertFalse(self.p.project_dir(self.project.id).exists())
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+    async def test_delete_preserves_persisted_worker_receipt_after_cleanup_failure(self) -> None:
+        from app.video_contracts import VideoProjectJob
+
+        document = self.p.load(self.project.id)
+        document.project.job = VideoProjectJob(id="d" * 32, operation="preview", status="running")
+        self.p.save(document)
+        receipt = self.p.project_dir(self.project.id) / "worker.json"
+        receipt.write_text("worker identity must remain recoverable")
+
+        async def cleanup_failed(*_args: object) -> str:
+            self.r._worker(self.project.id, WorkerIdentity(pid=123, token="e" * 32, receipt=str(receipt)))
+            raise OSError("worker termination failed")
+
+        with patch.object(self.r, "_generate", side_effect=cleanup_failed):
+            await self.r._run(self.project.id, VideoRenderRequest(revision=self.project.revision), "preview", None)
+        self.assertIsNotNone(self.p.load(self.project.id).worker)
+        self.assertNotIn(self.project.id, self.r._tasks)
+        self.assertNotIn(self.project.id, self.r._unverified)
+        with self.assertRaises(self.p.VideoProjectError) as failure:
+            await self.r.delete(self.project.id)
+        self.assertEqual(failure.exception.code, "worker_identity_unverified")
+        self.assertTrue(receipt.is_file())
+        self.assertTrue(self.audio.is_file())
+
+    async def test_delete_drains_multiple_reference_uploads(self) -> None:
+        from app.video_media import MediaInfo
+
+        entered = asyncio.Event()
+        started = 0
+        cleaned = 0
+
+        async def delayed_probe(_path: Path) -> MediaInfo:
+            nonlocal started, cleaned
+            started += 1
+            if started == 2:
+                entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned += 1
+            return MediaInfo(80, 60, 0, 0, 0)
+
+        uploads = [UploadFile(io.BytesIO(self.image.read_bytes()), filename=f"{index}.png") for index in range(2)]
+        with patch.object(self.p, "probe_media", side_effect=delayed_probe):
+            pending = [asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload)) for upload in uploads]
+            await entered.wait()
+            try:
+                await self.r.delete(self.project.id)
+                self.assertTrue(all(task.done() for task in pending))
+                self.assertEqual(cleaned, 2)
+                self.assertTrue(all(upload.file.closed for upload in uploads))
+                self.assertFalse(self.p.project_dir(self.project.id).exists())
+            finally:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def test_delete_gate_rejects_new_reference_work_before_probe(self) -> None:
+        from app.video_media import MediaInfo
+
+        cleaning = asyncio.Event()
+        release = asyncio.Event()
+
+        async def measurement() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+
+        measurement_task = asyncio.create_task(measurement())
+        self.r._analysis_tasks[self.project.id] = measurement_task
+        await asyncio.sleep(0)
+        deleting = asyncio.create_task(self.r.delete(self.project.id))
+        await cleaning.wait()
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="late.png")
+        try:
+            with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)) as probe:
+                with self.assertRaises(self.p.VideoProjectError) as failure:
+                    await self.p.upload_reference(self.project.id, self.project.revision, upload)
+                self.assertEqual(failure.exception.code, "busy")
+                probe.assert_not_called()
+            self.assertTrue(upload.file.closed)
+        finally:
+            release.set()
+            await asyncio.gather(deleting, measurement_task, return_exceptions=True)
+
+    async def test_shutdown_drains_reference_only_work(self) -> None:
+        from app.video_media import MediaInfo
+
+        started = asyncio.Event()
+
+        async def delayed_probe(_path: Path) -> MediaInfo:
+            started.set()
+            await asyncio.Event().wait()
+            return MediaInfo(80, 60, 0, 0, 0)
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "probe_media", side_effect=delayed_probe):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            await started.wait()
+            try:
+                await self.r.shutdown()
+                self.assertTrue(pending.done())
+                self.assertTrue(upload.file.closed)
+                self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+                self.assertFalse(list(self.p.project_dir(self.project.id).glob("*.upload")))
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+    async def test_reference_cleanup_failure_preserves_ownership_and_blocks_delete_retries(self) -> None:
+        from app.job_lifecycle import kill_process_tree, spawn_process
+        from app.video_media import MediaInfo
+
+        started = asyncio.Event()
+        workers: list[asyncio.subprocess.Process] = []
+
+        async def encoder(*_argv: str, stdout: int, stderr: int) -> asyncio.subprocess.Process:
+            proc = await spawn_process(sys.executable, "-c", "import time; time.sleep(30)", stdout=stdout, stderr=stderr)
+            workers.append(proc)
+            return proc
+
+        async def blocked_encoder(_proc: asyncio.subprocess.Process, _timeout: float) -> tuple[bytes, bytes]:
+            started.set()
+            await asyncio.Event().wait()
+            return b"", b""
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        pending: asyncio.Task[VideoProject] | None = None
+        try:
+            with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)), patch.object(self.p, "spawn_process", side_effect=encoder), patch.object(self.p, "communicate_process", side_effect=blocked_encoder), patch.object(self.p, "kill_process_tree", side_effect=OSError("termination failed")):
+                pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+                await started.wait()
+                for _ in range(2):
+                    with self.assertRaises(self.p.VideoProjectError) as failure:
+                        await self.r.delete(self.project.id)
+                    self.assertEqual(failure.exception.code, "cleanup_failed")
+                    self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+                    self.assertTrue(self.audio.is_file())
+                    self.assertIn(self.project.id, self.p.reference_project_ids())
+                self.assertTrue(upload.file.closed)
+                self.assertTrue(list(self.p.project_dir(self.project.id).glob("*.upload")))
+                another = UploadFile(io.BytesIO(self.image.read_bytes()), filename="later.png")
+                with self.assertRaises(self.p.VideoProjectError) as admission:
+                    await self.p.upload_reference(self.project.id, self.project.revision, another)
+                self.assertEqual(admission.exception.code, "cleanup_failed")
+                self.assertTrue(another.file.closed)
+        finally:
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
+            for worker in workers:
+                await kill_process_tree(worker)
+            self.p._reference_tasks.pop(self.project.id, None)
+
+    async def test_delete_drains_reference_cancelled_before_its_first_step(self) -> None:
+        from app.video_media import MediaInfo
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)) as probe:
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            deleting = asyncio.create_task(self.r.delete(self.project.id))
+            await asyncio.gather(pending, deleting, return_exceptions=True)
+            self.assertTrue(upload.file.closed)
+            self.assertTrue(pending.cancelled())
+            self.assertFalse(self.p.project_dir(self.project.id).exists())
+            self.assertNotIn(self.project.id, self.p.reference_project_ids())
+            probe.assert_not_called()
+
+    async def test_pre_start_cancellation_waits_for_upload_close_before_delete(self) -> None:
+        closing = asyncio.Event()
+        release = asyncio.Event()
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        original_close = upload.close
+
+        async def delayed_close() -> None:
+            closing.set()
+            await release.wait()
+            await original_close()
+
+        with patch.object(upload, "close", side_effect=delayed_close):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            deleting = asyncio.create_task(self.r.delete(self.project.id))
+            try:
+                await asyncio.wait_for(closing.wait(), 1)
+                self.assertFalse(deleting.done())
+                self.assertIn(self.project.id, self.p.reference_project_ids())
+                self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+            finally:
+                release.set()
+                await asyncio.gather(pending, deleting, return_exceptions=True)
+            self.assertTrue(upload.file.closed)
+            self.assertFalse(self.p.project_dir(self.project.id).exists())
+
+    async def test_pre_start_close_failure_keeps_project_and_owned_error(self) -> None:
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        original_close = upload.close
+        try:
+            with patch.object(upload, "close", side_effect=OSError("close failed")):
+                pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+                deleting = asyncio.create_task(self.r.delete(self.project.id))
+                results = await asyncio.gather(pending, deleting, return_exceptions=True)
+                for result in results:
+                    self.assertIsInstance(result, self.p.VideoProjectError)
+                    if isinstance(result, self.p.VideoProjectError):
+                        self.assertEqual(result.code, "cleanup_failed")
+                self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+                self.assertIn(self.project.id, self.p.reference_project_ids())
+                self.assertTrue(self.audio.is_file())
+                with self.assertRaises(self.p.VideoProjectError) as failure:
+                    await self.r.delete(self.project.id)
+                self.assertEqual(failure.exception.code, "cleanup_failed")
+        finally:
+            await original_close()
+            self.p._reference_tasks.pop(self.project.id, None)
+
+    async def test_cancel_route_drains_references_despite_repeated_caller_cancellation(self) -> None:
+        from app.api.routes_videos import cancel_project
+        from app.video_media import MediaInfo
+
+        started = asyncio.Event()
+        cleaning = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_probe(_path: Path) -> MediaInfo:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+            return MediaInfo(80, 60, 0, 0, 0)
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "probe_media", side_effect=delayed_probe):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            await started.wait()
+            cancelling = asyncio.create_task(cancel_project(self.project.id))
+            await cleaning.wait()
+            try:
+                cancelling.cancel()
+                await asyncio.sleep(0)
+                cancelling.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(cancelling.done())
+                self.assertIn(self.project.id, self.p.reference_project_ids())
+                late = UploadFile(io.BytesIO(self.image.read_bytes()), filename="late.png")
+                with self.assertRaises(self.p.VideoProjectError) as failure:
+                    await self.p.upload_reference(self.project.id, self.project.revision, late)
+                self.assertEqual(failure.exception.code, "busy")
+                self.assertTrue(late.file.closed)
+            finally:
+                release.set()
+                await asyncio.gather(cancelling, pending, return_exceptions=True)
+            self.assertTrue(cancelling.cancelled())
+            self.assertTrue(upload.file.closed)
+            self.assertNotIn(self.project.id, self.p.reference_project_ids())
+            self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+            self.assertFalse(list(self.p.project_dir(self.project.id).glob("*.upload")))
+
+    async def test_upload_caller_abort_after_publication_retains_completed_reference(self) -> None:
+        from app.job_lifecycle import kill_process_tree
+
+        published = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_cleanup(proc: asyncio.subprocess.Process | None) -> None:
+            await kill_process_tree(proc)
+            published.set()
+            await release.wait()
+
+        upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
+        with patch.object(self.p, "kill_process_tree", side_effect=delayed_cleanup):
+            pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
+            await published.wait()
+            try:
+                saved = self.p.get(self.project.id)
+                self.assertEqual(len(saved.references), 2)
+                pending.cancel()
+                await asyncio.sleep(0)
+                pending.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+            finally:
+                release.set()
+                await asyncio.gather(pending, return_exceptions=True)
+            self.assertTrue(pending.cancelled())
+            self.assertTrue(upload.file.closed)
+            self.assertNotIn(self.project.id, self.p.reference_project_ids())
+            saved = self.p.get(self.project.id)
+            self.assertEqual(len(saved.references), 2)
+            self.assertTrue(self.p.reference_file(self.project.id, saved.references[-1].id).is_file())
+            self.assertFalse(list(self.p.project_dir(self.project.id).glob("*.upload")))
 
     async def test_unknown_worker_remains_blocked_across_repeated_recovery(
         self,
