@@ -377,6 +377,100 @@ class TaggedDownloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failed.status_code, 503)
             self.assertEqual(failed.json(), {"detail": "ffmpeg_missing"})
 
+    async def test_completed_download_stops_watcher_when_request_scope_absorbs_cancellation(self) -> None:
+        from app.api import tagged_download_response as download_api
+
+        directory = self.scratch / "completed"
+        directory.mkdir()
+        target = directory / "download.wav"
+        target.write_bytes(self.voice.read_bytes())
+        completed = tagging.TaggedAudioDownload("d" * 32, directory, target, "song.wav")
+        tagging._pending[completed.identifier] = completed
+        release = asyncio.Event()
+
+        async def prepare(
+            _track_id: int, _version_id: str | None, _export_id: str | None,
+            *, options: tagging.TaggedDownloadOptions,
+        ) -> tagging.TaggedAudioDownload:
+            # Preparation finishes just before the watcher enters Request's
+            # cancelled scope. Both cancel the same receive Future before its
+            # task wakes, so AnyIO can absorb the watcher cancellation.
+            return completed
+
+        async def receive() -> dict[str, object]:
+            if release.is_set():
+                return {"type": "http.disconnect"}
+            await asyncio.Event().wait()
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request({"type": "http", "headers": []}, receive=receive)
+        with patch.object(download_api, "prepare_download", side_effect=prepare):
+            response_task = asyncio.create_task(download_api.tagged_download_response(
+                self.track_id, self.voice_id, None, tagging.TaggedDownloadOptions(), request,
+            ))
+            try:
+                response = await asyncio.wait_for(asyncio.shield(response_task), timeout=2)
+                self.assertIs(response.download, completed)
+                self.assertTrue(target.is_file())
+            finally:
+                # Bound the regression without leaving the old watcher behind
+                # when this test fails against the broken implementation.
+                release.set()
+                if not response_task.done():
+                    response_task.cancel()
+                await asyncio.wait_for(asyncio.gather(response_task, return_exceptions=True), timeout=2)
+                completed.cleanup()
+        self.assertFalse(tagging._pending)
+        self.assertFalse(list(self.scratch.iterdir()))
+
+    async def test_request_cancellation_stops_scope_watcher_and_releases_completed_copy(self) -> None:
+        from app.api import tagged_download_response as download_api
+
+        directory = self.scratch / "completed"
+        directory.mkdir()
+        target = directory / "download.wav"
+        target.write_bytes(self.voice.read_bytes())
+        completed = tagging.TaggedAudioDownload("d" * 32, directory, target, "song.wav")
+        tagging._pending[completed.identifier] = completed
+        release = asyncio.Event()
+        response_task: asyncio.Task[tagging.TaggedFileResponse] | None = None
+        scheduled = False
+
+        async def prepare(
+            _track_id: int, _version_id: str | None, _export_id: str | None,
+            *, options: tagging.TaggedDownloadOptions,
+        ) -> tagging.TaggedAudioDownload:
+            return completed
+
+        async def receive() -> dict[str, object]:
+            nonlocal scheduled
+            if release.is_set():
+                return {"type": "http.disconnect"}
+            if not scheduled:
+                if response_task is None:
+                    raise RuntimeError("response task was not registered")
+                scheduled = True
+                asyncio.get_running_loop().call_soon(response_task.cancel)
+            await asyncio.Event().wait()
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request({"type": "http", "headers": []}, receive=receive)
+        with patch.object(download_api, "prepare_download", side_effect=prepare):
+            response_task = asyncio.create_task(download_api.tagged_download_response(
+                self.track_id, self.voice_id, None, tagging.TaggedDownloadOptions(), request,
+            ))
+            try:
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(response_task), timeout=2)
+                self.assertFalse(target.exists())
+                self.assertFalse(tagging._pending)
+            finally:
+                release.set()
+                if not response_task.done():
+                    response_task.cancel()
+                await asyncio.wait_for(asyncio.gather(response_task, return_exceptions=True), timeout=2)
+                completed.cleanup()
+
 
 class TaggingMetadataTests(unittest.TestCase):
     def test_genre_compounds_and_ambiguous_ordinary_words(self) -> None:

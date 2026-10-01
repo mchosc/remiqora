@@ -20,6 +20,93 @@ from app.video_contracts import (
 )
 
 
+async def wait_for_test_signal(
+    signal: asyncio.Event,
+    *children: asyncio.Task[object],
+    description: str,
+    timeout: float = 5,
+) -> None:
+    """Report child failure or missing readiness instead of waiting forever."""
+    waiter = asyncio.create_task(signal.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (waiter, *children), timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        if signal.is_set():
+            return
+        for child in children:
+            if child in done:
+                if child.cancelled():
+                    raise AssertionError(f"Child cancelled before {description}")
+                child.result()
+                raise AssertionError(f"Child completed before {description}")
+        raise AssertionError(f"Timed out after {timeout:g}s waiting for {description}")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def drain_test_children(
+    *children: asyncio.Task[object], cancel: bool = True
+) -> None:
+    """Cancel once, then consume child outcomes without masking test failures."""
+    if cancel:
+        for child in children:
+            if not child.done() and not child.cancelling():
+                child.cancel()
+    await asyncio.gather(*children, return_exceptions=True)
+
+
+class VideoTestHandshakeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handshake_reports_child_failure_before_signal(self) -> None:
+        signal = asyncio.Event()
+
+        async def fail_before_signal() -> None:
+            raise RuntimeError("injected child failure before readiness")
+
+        child = asyncio.create_task(fail_before_signal())
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected child failure before readiness"):
+                await wait_for_test_signal(signal, child, description="probe readiness")
+        finally:
+            await drain_test_children(child)
+
+    async def test_handshake_reports_completion_without_signal(self) -> None:
+        signal = asyncio.Event()
+
+        async def complete_without_signal() -> None:
+            return
+
+        child = asyncio.create_task(complete_without_signal())
+        try:
+            with self.assertRaisesRegex(AssertionError, "Child completed before probe readiness"):
+                await wait_for_test_signal(signal, child, description="probe readiness")
+        finally:
+            await drain_test_children(child)
+
+    async def test_handshake_timeout_still_releases_and_drains_child(self) -> None:
+        signal = asyncio.Event()
+        release = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def blocked_child() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await release.wait()
+                cleaned.set()
+
+        child = asyncio.create_task(blocked_child())
+        try:
+            with self.assertRaisesRegex(AssertionError, "waiting for probe readiness"):
+                await wait_for_test_signal(signal, child, description="probe readiness", timeout=.02)
+        finally:
+            release.set()
+            await drain_test_children(child)
+        self.assertTrue(child.done())
+        self.assertTrue(cleaned.is_set())
+
+
 class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         from app import video_projects as p, video_render as r
@@ -429,8 +516,8 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
         with patch.object(self.p, "probe_media", side_effect=delayed_probe):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-            await started.wait()
             try:
+                await wait_for_test_signal(started, pending, description="reference probe readiness")
                 await self.r.delete(self.project.id)
                 self.assertTrue(pending.done(), "DELETE returned while its reference upload could still write")
                 self.assertTrue(cleaned.is_set())
@@ -438,8 +525,7 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(self.p.project_dir(self.project.id).exists())
                 self.assertEqual(self.audio.read_bytes(), before)
             finally:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+                await drain_test_children(pending)
 
     async def test_delete_terminates_reference_encoder_before_removing_project(self) -> None:
         from app.job_lifecycle import spawn_process
@@ -457,16 +543,15 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
         with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)), patch.object(self.p, "spawn_process", side_effect=encoder):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-            await started.wait()
             try:
+                await wait_for_test_signal(started, pending, description="reference encoder readiness")
                 await self.r.delete(self.project.id)
                 self.assertTrue(pending.done(), "DELETE returned before reference encoder cleanup")
                 self.assertIsNotNone(workers[0].returncode)
                 self.assertTrue(upload.file.closed)
                 self.assertFalse(self.p.project_dir(self.project.id).exists())
             finally:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+                await drain_test_children(pending)
 
     async def test_delete_preserves_persisted_worker_receipt_after_cleanup_failure(self) -> None:
         from app.video_contracts import VideoProjectJob
@@ -513,17 +598,15 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         uploads = [UploadFile(io.BytesIO(self.image.read_bytes()), filename=f"{index}.png") for index in range(2)]
         with patch.object(self.p, "probe_media", side_effect=delayed_probe):
             pending = [asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload)) for upload in uploads]
-            await entered.wait()
             try:
+                await wait_for_test_signal(entered, *pending, description="both reference probes entering")
                 await self.r.delete(self.project.id)
                 self.assertTrue(all(task.done() for task in pending))
                 self.assertEqual(cleaned, 2)
                 self.assertTrue(all(upload.file.closed for upload in uploads))
                 self.assertFalse(self.p.project_dir(self.project.id).exists())
             finally:
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+                await drain_test_children(*pending)
 
     async def test_delete_gate_rejects_new_reference_work_before_probe(self) -> None:
         from app.video_media import MediaInfo
@@ -540,20 +623,28 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
 
         measurement_task = asyncio.create_task(measurement())
         self.r._analysis_tasks[self.project.id] = measurement_task
-        await asyncio.sleep(0)
-        deleting = asyncio.create_task(self.r.delete(self.project.id))
-        await cleaning.wait()
+        deleting: asyncio.Task[None] | None = None
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="late.png")
+        failed = True
         try:
+            await asyncio.sleep(0)
+            deleting = asyncio.create_task(self.r.delete(self.project.id))
+            await wait_for_test_signal(cleaning, deleting, measurement_task, description="analysis cleanup entering")
             with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)) as probe:
                 with self.assertRaises(self.p.VideoProjectError) as failure:
                     await self.p.upload_reference(self.project.id, self.project.revision, upload)
                 self.assertEqual(failure.exception.code, "busy")
                 probe.assert_not_called()
             self.assertTrue(upload.file.closed)
+            failed = False
         finally:
             release.set()
-            await asyncio.gather(deleting, measurement_task, return_exceptions=True)
+            if deleting is None:
+                await drain_test_children(measurement_task)
+            else:
+                await drain_test_children(deleting, measurement_task, cancel=failed)
+            await upload.close()
+            self.r._analysis_tasks.pop(self.project.id, None)
 
     async def test_shutdown_drains_reference_only_work(self) -> None:
         from app.video_media import MediaInfo
@@ -568,16 +659,15 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
         with patch.object(self.p, "probe_media", side_effect=delayed_probe):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-            await started.wait()
             try:
+                await wait_for_test_signal(started, pending, description="reference-only shutdown work entering")
                 await self.r.shutdown()
                 self.assertTrue(pending.done())
                 self.assertTrue(upload.file.closed)
                 self.assertTrue(self.p.project_dir(self.project.id).is_dir())
                 self.assertFalse(list(self.p.project_dir(self.project.id).glob("*.upload")))
             finally:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+                await drain_test_children(pending)
 
     async def test_reference_cleanup_failure_preserves_ownership_and_blocks_delete_retries(self) -> None:
         from app.job_lifecycle import kill_process_tree, spawn_process
@@ -601,7 +691,7 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(self.p, "probe_media", return_value=MediaInfo(80, 60, 0, 0, 0)), patch.object(self.p, "spawn_process", side_effect=encoder), patch.object(self.p, "communicate_process", side_effect=blocked_encoder), patch.object(self.p, "kill_process_tree", side_effect=OSError("termination failed")):
                 pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-                await started.wait()
+                await wait_for_test_signal(started, pending, description="reference encoder communication entering")
                 for _ in range(2):
                     with self.assertRaises(self.p.VideoProjectError) as failure:
                         await self.r.delete(self.project.id)
@@ -618,7 +708,7 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(another.file.closed)
         finally:
             if pending is not None:
-                await asyncio.gather(pending, return_exceptions=True)
+                await drain_test_children(pending)
             for worker in workers:
                 await kill_process_tree(worker)
             self.p._reference_tasks.pop(self.project.id, None)
@@ -651,14 +741,16 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(upload, "close", side_effect=delayed_close):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
             deleting = asyncio.create_task(self.r.delete(self.project.id))
+            failed = True
             try:
-                await asyncio.wait_for(closing.wait(), 1)
+                await wait_for_test_signal(closing, pending, deleting, description="pre-start upload close entering")
                 self.assertFalse(deleting.done())
                 self.assertIn(self.project.id, self.p.reference_project_ids())
                 self.assertTrue(self.p.project_dir(self.project.id).is_dir())
+                failed = False
             finally:
                 release.set()
-                await asyncio.gather(pending, deleting, return_exceptions=True)
+                await drain_test_children(pending, deleting, cancel=failed)
             self.assertTrue(upload.file.closed)
             self.assertFalse(self.p.project_dir(self.project.id).exists())
 
@@ -704,10 +796,11 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
         with patch.object(self.p, "probe_media", side_effect=delayed_probe):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-            await started.wait()
-            cancelling = asyncio.create_task(cancel_project(self.project.id))
-            await cleaning.wait()
+            cancelling: asyncio.Task[VideoProject] | None = None
             try:
+                await wait_for_test_signal(started, pending, description="cancel-route reference probe readiness")
+                cancelling = asyncio.create_task(cancel_project(self.project.id))
+                await wait_for_test_signal(cleaning, pending, cancelling, description="cancel-route reference cleanup entering")
                 cancelling.cancel()
                 await asyncio.sleep(0)
                 cancelling.cancel()
@@ -721,7 +814,13 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(late.file.closed)
             finally:
                 release.set()
-                await asyncio.gather(cancelling, pending, return_exceptions=True)
+                if cancelling is None:
+                    await drain_test_children(pending)
+                else:
+                    await drain_test_children(cancelling, pending)
+            self.assertIsNotNone(cancelling)
+            if cancelling is None:
+                raise AssertionError("Cancel-route child was not created")
             self.assertTrue(cancelling.cancelled())
             self.assertTrue(upload.file.closed)
             self.assertNotIn(self.project.id, self.p.reference_project_ids())
@@ -742,8 +841,8 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
         upload = UploadFile(io.BytesIO(self.image.read_bytes()), filename="new.png")
         with patch.object(self.p, "kill_process_tree", side_effect=delayed_cleanup):
             pending = asyncio.create_task(self.p.upload_reference(self.project.id, self.project.revision, upload))
-            await published.wait()
             try:
+                await wait_for_test_signal(published, pending, description="published reference cleanup entering")
                 saved = self.p.get(self.project.id)
                 self.assertEqual(len(saved.references), 2)
                 pending.cancel()
@@ -753,7 +852,7 @@ class VideoRenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(pending.done())
             finally:
                 release.set()
-                await asyncio.gather(pending, return_exceptions=True)
+                await drain_test_children(pending)
             self.assertTrue(pending.cancelled())
             self.assertTrue(upload.file.closed)
             self.assertNotIn(self.project.id, self.p.reference_project_ids())

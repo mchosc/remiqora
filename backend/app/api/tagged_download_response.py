@@ -16,15 +16,18 @@ def download_options(album: Annotated[str | None, Query(max_length=120, pattern=
     return TaggedDownloadOptions(album=album, track_no=track_no)
 
 
-async def _disconnected(request: Request) -> None:
-    while not await request.is_disconnected():
+async def _disconnected(request: Request, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        if await request.is_disconnected() or stop.is_set():
+            return
         await asyncio.sleep(0.1)
 
 
 async def _connected_download(track_id: int, version_id: str | None, export_id: str | None,
                               options: TaggedDownloadOptions, request: Request) -> TaggedAudioDownload:
     preparation = asyncio.create_task(prepare_download(track_id, version_id, export_id, options=options))
-    disconnected = asyncio.create_task(_disconnected(request))
+    stop = asyncio.Event()
+    disconnected = asyncio.create_task(_disconnected(request, stop))
     try:
         try:
             finished, _ = await asyncio.wait({preparation, disconnected}, return_when=asyncio.FIRST_COMPLETED)
@@ -32,6 +35,10 @@ async def _connected_download(track_id: int, version_id: str | None, export_id: 
                 raise TaggingError("download_cancelled")
             result = preparation.result()
         finally:
+            # Request.is_disconnected() uses an AnyIO cancel scope which can
+            # absorb a racing Task.cancel(). The explicit signal still lets
+            # the watcher settle before owned preparation cleanup completes.
+            stop.set()
             disconnected.cancel()
             if not preparation.done():
                 preparation.cancel()
