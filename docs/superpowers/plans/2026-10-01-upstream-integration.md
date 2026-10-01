@@ -58,7 +58,7 @@ Owner: parent and a focused accessibility agent after the audio handoff. Files: 
 - [x] Run desktop tests because backend startup/router registration changed.
 - [x] Request independent spec and quality review; fix material findings and rerun affected checks.
 - [x] Inspect final merge diff, Git status and preservation checklist. Document actual verification and upstream adaptations.
-- [ ] Deliver on the fork sync branch under the existing fork publishing authorization, preserving both Git histories. Update the normal checkout only after checks; avoid restarting active model jobs.
+- [x] Deliver on the fork sync branch under the existing fork publishing authorization, preserving both Git histories. Update the normal checkout only after checks; avoid restarting active model jobs.
 
 ## Review corrections
 
@@ -70,3 +70,13 @@ Owner: parent and a focused accessibility agent after the audio handoff. Files: 
 - Clamp the reported trim-slider value to shortened source bounds without changing saved trims.
 - Retain existing visibly indicated playback-refresh fallback; download requests capture exact IDs and never substitute files.
 - Reconcile successful YuE rename/delete edits with pending history, retaining other tracks and latest-request ownership.
+
+## Delivery evidence
+
+Merge commit `c09faa77648c74248aa82fe0ed6af145665c55d4` retains fork `9391186`
+and upstream `5a2f4a4` as parents. It was pushed to
+`mchosc/remiqora:sync/upstream-2026-10-01`; the normal checkout uses that branch.
+The delivered checkout also passed a fresh strict production build.
+Shared `master`, the real library and model processes were not modified.
+Local verification counts and limitations are recorded in
+[the integration notes](../../upstream-integration-2026-10-01.md).
