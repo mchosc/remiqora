@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  workflow_call:
   push:
-    branches: [master]
+    branches: ["**"]
   pull_request:
     branches: [master]
 
@@ -10,10 +12,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  desktop:
+    name: Desktop (unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      # Unit tests do not launch Electron; avoid its binary download here.
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
   frontend:
     name: Frontend (types, behavioral tests, build)
     runs-on: ubuntu-latest
@@ -34,12 +53,14 @@ jobs:
   backend:
     name: Backend (regressions and contract drift)
     runs-on: ubuntu-latest
-    env:
-      REMIQORA_CONFIG: ${{ runner.temp }}/remiqora-test-config.json
-      REMIQORA_DATA_DIR: ${{ runner.temp }}/remiqora-test-library
-      SEED_VC_DIR: ${{ runner.temp }}/remiqora-test-seed-vc
     steps:
       - uses: actions/checkout@v7
+      - name: Isolate test configuration, library and engine
+        run: |
+          printf '%s\n' \
+            "REMIQORA_CONFIG=$RUNNER_TEMP/remiqora-test-config.json" \
+            "REMIQORA_DATA_DIR=$RUNNER_TEMP/remiqora-test-library" \
+            "SEED_VC_DIR=$RUNNER_TEMP/remiqora-test-seed-vc" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

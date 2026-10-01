@@ -11,7 +11,7 @@ const { loadConfig, updateConfig, ensureWritableDir } = require('./config');
 // Only these links can be opened from the first-run screen.
 const EXTERNAL = {
   'nvidia-drivers': 'https://www.nvidia.com/drivers',
-  issues: 'https://github.com/inikolax/remiqora/issues/new',
+  issues: 'https://github.com/mchosc/remiqora/issues/new/choose',
 };
 const SETUP_PAGE = path.join(__dirname, '..', 'renderer', 'index.html');
 
@@ -45,7 +45,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 620,
     show: false,
-    title: 'Remiqora',
+    title: 'Remiqora (mchosc fork)',
     backgroundColor: '#0f0f14',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });

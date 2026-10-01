@@ -1,6 +1,6 @@
 name: Desktop app
 
-# Builds the Electron installers. Pushes, pull requests and manual runs only keep the files as workflow artifacts.
+# Builds the fork's experimental installers. Pull requests and manual runs keep files as workflow artifacts.
 # Pushing a tag vX.Y.Z also creates a DRAFT pre-release with the installers and their SHA-256 sums; nothing becomes
 # public until the draft is published by hand. The installers are not signed yet.
 on:
@@ -14,6 +14,7 @@ on:
       - "backend/**"
       - "frontend/**"
       - ".github/workflows/desktop.yml"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
@@ -23,8 +24,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify:
+    name: Verify candidate
+    uses: ./.github/workflows/ci.yml
+
   package:
     name: Package (${{ matrix.name }})
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -64,7 +70,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - uses: actions/upload-artifact@v7
         with:
-          name: remiqora-${{ runner.os }}
+          name: remiqora-mchosc-${{ runner.os }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: error
 
@@ -94,21 +100,26 @@ jobs:
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cat > ../notes.md <<'NOTES'
-          Experimental desktop installers for Windows (NVIDIA GPU) and macOS (Apple Silicon).
+          Experimental mchosc Remiqora fork installers for Windows (NVIDIA GPU) and macOS (Apple Silicon).
 
           - They are not signed yet. Windows shows a SmartScreen warning and macOS may ask you to allow the app.
-          - The installer is small: the first launch downloads the engines and models (roughly 30 GB) into a folder you choose.
+          - First launch downloads the baseline music engines and models into a folder you choose. Voice and generated-video engines require their separately documented setup.
           - SHA-256 sums of every file are in `SHA256SUMS.txt`.
 
-          Setup from scripts and the full list of limits are in the README.
+          Setup instructions, verified environments and known limits belong in the README and reviewed release notes. A successful package build alone does not verify installation or GPU inference.
           NOTES
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)
+            if [ "$draft" != "true" ]; then
+              echo "Refusing to overwrite assets of published release $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
             gh release upload "$GITHUB_REF_NAME" installers/* --clobber
           else
             gh release create "$GITHUB_REF_NAME" installers/* --draft --prerelease \
-              --title "Remiqora ${GITHUB_REF_NAME#v}" --notes-file notes.md
+              --title "Remiqora (mchosc fork) ${GITHUB_REF_NAME#v}" --notes-file notes.md
           fi

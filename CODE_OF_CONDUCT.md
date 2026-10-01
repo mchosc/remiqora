@@ -21,7 +21,7 @@ We want participation in this project to be a welcoming, harassment-free experie
 
 The maintainer is responsible for clarifying and enforcing these standards and may edit, remove, or reject comments, commits, issues, and other contributions that don't follow this Code of Conduct, and may temporarily or permanently ban anyone for behavior they deem inappropriate.
 
-To report a problem, contact the maintainer privately through their GitHub profile: <https://github.com/inikolax>. All reports will be reviewed and handled with discretion.
+For conduct in this fork, notify the maintainer [mchosc](https://github.com/mchosc) in the relevant issue or pull request. Describe the behavior without repeating private information. GitHub's own report controls are available for platform abuse. A separate private conduct-reporting channel has not been established; do not publish sensitive details in an issue.
 
 ## Attribution
 

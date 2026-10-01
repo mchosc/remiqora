@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Issues can be written in English or Russian.
-        Not sure it's a good fit yet? Start a thread in [Discussions](https://github.com/inikolax/remiqora/discussions).
+        Check the [fork roadmap](https://github.com/mchosc/remiqora/blob/master/ROADMAP.md) and describe a concrete workflow need.
   - type: textarea
     id: problem
     attributes:

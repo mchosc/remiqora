@@ -1,8 +1,8 @@
 {
-  "name": "remiqora-desktop",
-  "version": "0.2.1",
+  "name": "remiqora-mchosc-desktop",
+  "version": "0.3.0-dev.0",
   "private": true,
-  "description": "Remiqora desktop app: first-run setup, server lifecycle and installers",
+  "description": "Maintained mchosc Remiqora fork: experimental desktop setup and installers",
   "author": "Nikolay Cherkashin <inikolax@gmail.com>",
   "license": "MIT",
   "main": "src/main.js",

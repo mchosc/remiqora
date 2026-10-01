@@ -10,6 +10,15 @@ Act as a senior technical and business partner. Be direct, skeptical, and eviden
 - Use focused parallel agents for independent problem domains when useful; assign exclusive file ownership and review the integrated result.
 - Do not commit, publish, deploy, rewrite Git history, or run production migrations unless explicitly requested.
 
+## Maintained fork workflow
+
+- This is `mchosc/remiqora`, a maintained fork of `inikolax/remiqora`. Preserve upstream history, MIT copyright and attribution; clearly label fork changes and experimental releases.
+- `origin` is the fork and `upstream` is the original repository. Check remotes before pushing; use the fork as the push default. Do not push to upstream as part of ordinary fork work.
+- Use focused topic branches from fork `master`. Integrate upstream on reviewed `sync/upstream-…` branches with merge commits; never force-push or rebase shared `master`.
+- Follow [ROADMAP.md](ROADMAP.md) and [fork maintenance](docs/fork-maintenance.md). Prioritize recoverable data, installation and measured quality before additional engines or infrastructure.
+- Before broad migrations or a baseline snapshot, preserve source/history and private configuration, take a consistent database backup, and copy user media/checkpoints/datasets. Keep backups and model caches outside Git. Do not move a library during active work.
+- Required checks protect `master`. Release tags must match desktop version metadata; packaging creates a draft prerelease. Publishing requires an explicit maintainer request covering the reviewed artifacts and platform evidence. Never overwrite a published release's assets.
+
 ## Strict type safety
 
 - TypeScript must remain in strict mode. Do not introduce `any`, double assertions, unchecked assertions at untrusted boundaries, `@ts-ignore`, `@ts-expect-error`, or disabled checks to make a build pass.

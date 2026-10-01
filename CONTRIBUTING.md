@@ -1,28 +1,61 @@
 # Contributing to Remiqora
 
-Thanks for your interest! Bug reports, ideas, documentation fixes and pull requests are all welcome. Issues and PRs can be written in **English or Russian**.
+This repository, [mchosc/remiqora](https://github.com/mchosc/remiqora), is a maintained
+fork of [inikolax/remiqora](https://github.com/inikolax/remiqora), originally created
+by Nikolay Cherkashin. Bug reports, documentation fixes and focused pull requests
+are welcome in **English or Russian**. See the [roadmap](ROADMAP.md) for priorities.
 
 ## Questions and ideas
 
-For questions, "how do I…" and early ideas, please use [Discussions](https://github.com/inikolax/remiqora/discussions). For confirmed bugs and concrete feature requests, open an [issue](https://github.com/inikolax/remiqora/issues/new/choose) using the template. For security problems, see [SECURITY.md](SECURITY.md).
+Use this fork's [issues](https://github.com/mchosc/remiqora/issues) for questions,
+reproducible bugs and concrete feature proposals. Include the commit/version,
+OS/device, installed engine revisions, reproduction steps and sanitized logs.
+Do not upload secrets or private recordings. For security reports, follow
+[SECURITY.md](SECURITY.md).
 
 ## Getting set up
 
-Follow the installation steps in the [README](README.md) (`setup_prereqs` and `setup_models` scripts for your OS), then start everything with `dev.bat` (Windows) or `./dev.sh` (macOS). The backend runs on port 9000 and the Vite dev server on port 5173.
+Follow the [README](README.md) for your platform. Read [AGENTS.md](AGENTS.md) before
+changing code, and use a copied or temporary library for development checks.
+Voice/video engine installation is separate from the backend environment; see
+[voice preparation](docs/voice-quality.md) and [video studio](docs/video-studio.md).
+Use the documented setup for engines/models; unit tests must not download weights.
 
 ## Before you open a pull request
 
-- Keep the change focused; one topic per PR is easiest to review.
-- Make sure the frontend builds and type-checks: `cd frontend && npm run build`. CI runs the same command.
-- Add new user-facing strings to **both** `frontend/src/locales/en.ts` and `frontend/src/locales/ru.ts`.
-- Follow the existing commit style ([Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `chore:`).
-- Don't commit model weights, `.env` files, logs or other machine-specific files.
-- For UI changes, include a screenshot in the PR description.
+- Branch from the fork's `master` using a small `fix/…`, `feat/…` or `docs/…` topic.
+  Preserve unrelated uncommitted work. Open the PR against this fork's `master`.
+- Keep one problem per PR. Explain its concrete trigger, resulting behavior,
+  compatibility/data effects and remaining uncertainty.
+- Add meaningful regression tests for behavioral changes, including relevant
+  failure, cancellation, concurrency and recovery paths. Keep TypeScript strict;
+  validate untrusted input and derive app-owned client contracts from the backend.
+- Run frontend tests/build, backend regressions, contract drift and the exact
+  scoped strict-mypy check in CI. Run desktop tests when startup, packaging or
+  file layout changes. [Fork maintenance](docs/fork-maintenance.md#required-checks)
+  gives isolated test commands; [CI](.github/workflows/ci.yml) is the checked scope.
+- Add user-facing strings in English and Russian, using the existing locale
+  modules and design components. Include relevant UI screenshots and accessibility
+  verification for UI changes.
+- Use descriptive commits with `feat:`, `fix:`, `docs:` or `chore:` prefixes. Keep
+  model weights, recordings, `.env`, logs and machine-specific artifacts out of Git.
+- Report commands actually run and distinguish CPU/mocked coverage from real
+  engine/platform checks. Passing tests do not establish perceptual model quality.
+
+Maintainers integrate upstream through `sync/upstream-…` branches. Do not rebase or
+force-push shared `master`. Submit selected, self-contained fixes upstream; the
+fork's accumulated baseline is not one giant upstream PR. See the
+[maintenance workflow](docs/fork-maintenance.md#branches-and-upstream-integration).
 
 ## Third-party models
 
-Remiqora is a UI and orchestrator over third-party engines; their code isn't vendored here, only small patches in `external/patches/`. Please note the model licenses listed in the README: for example, the YuE2-3B weights are CC BY-NC 4.0 (non-commercial).
+Engine code, model weights, datasets and generated media can have separate terms.
+Keep provenance and license notices for the exact artifacts used; check their
+authoritative license files before distributing them. This repository's MIT
+license does not license someone else's weights, recordings or output rights.
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
+Contributions to this repository are licensed under [MIT](LICENSE). Preserve the
+original copyright notice and credit to Nikolay Cherkashin and the upstream
+project; make the maintained-fork identity clear in distributed builds and docs.

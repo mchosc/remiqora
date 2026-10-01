@@ -7,6 +7,12 @@
 <h1 align="center">Remiqora</h1>
 <p align="center"><i>Made with AI. Made by you.</i></p>
 
+**Maintained fork: [mchosc/remiqora](https://github.com/mchosc/remiqora)**, based on [inikolax/remiqora](https://github.com/inikolax/remiqora) by Nikolay Cherkashin ([inikolax](https://github.com/inikolax)). The Remiqora name and upstream credit are retained; this fork is maintained independently.
+
+**0.3.0-dev.0 is an unreleased source snapshot.** There is no published fork installer or release tag. Historical upstream v0.2.1 installers below do not contain this fork's changes.
+
+[Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Fork maintenance and release checks](docs/fork-maintenance.md) · [Fork issues](https://github.com/mchosc/remiqora/issues)
+
 <p align="center">
   A local, GPU-powered music generation and production studio — one interface for <b>ACE-Step 1.5</b> and <b>YuE2-3B</b>, with a built-in multitrack DAW.
 </p>
@@ -15,15 +21,15 @@
 
 Video setup, the saved-project workflow, CPU testing and model limitations: [Video studio guide](docs/video-studio.md).
 
+This fork focuses on local music, voice and video creation: reliable singer preparation, retained audio sources and explicit export settings, persistent favorites, and recoverable jobs/projects. These features are implemented but experimental. CPU and mocked-model tests do not establish GPU quality, Windows support or a clean installation; the [roadmap](ROADMAP.md) records the remaining verification. Installation and data integrity take priority over adding more models.
+
 <p align="center">
-  <a href="https://remiqora.com/"><img alt="Website" src="https://img.shields.io/badge/website-remiqora.com-22d3ee?style=flat-square"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-in%20development-eab308?style=flat-square">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0f0f14?style=flat-square">
   <img alt="GPU" src="https://img.shields.io/badge/GPU-NVIDIA%20CUDA%20%7C%20Apple%20Metal-76B900?style=flat-square">
   <img alt="Stack" src="https://img.shields.io/badge/stack-Vue%203%20%2B%20FastAPI-a855f7?style=flat-square">
   <img alt="UI languages" src="https://img.shields.io/badge/UI-EN%20%2F%20RU-ec4899?style=flat-square">
-  <a href="https://ko-fi.com/inikolax"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -93,7 +99,7 @@ Attaching a reference track unlocks these scenarios:
 
 Plus: 10–300 s duration, batch of 1/2/4 variants, mp3/wav/flac formats, advanced parameters (BPM, key, time signature, vocal language, inference steps, guidance scale, seed), LoRA adapter support with adjustable strength, local presets, and a "Stop all" button for bulk job cancellation.
 
-The format selector uses the installed encoder's quality defaults; see [audio export quality](docs/audio-export-quality.md) for the verified settings and the separate WAV output used after applying a cloned voice.
+New ACE submissions retain the engine's WAV source and create the requested-format export with the profile captured from **Settings** at submission. Voice conversion retains its separate WAV output. See [audio export quality](docs/audio-export-quality.md) for explicit MP3/WAV/FLAC profiles and source-quality limits; higher export bit depth does not recover missing source detail.
 
 ## YuE2 and SheetSage2: generation
 
@@ -191,47 +197,48 @@ The desktop app additionally uses [Electron](https://www.electronjs.org) (MIT), 
 
 ## License & liability for generated content
 
-Remiqora's own code (this repository) is [MIT-licensed](LICENSE). That covers the UI and orchestrator only — it is a separate thing from the license of a *track* you generate with it. Remiqora is an orchestrator, not a generator with its own model — all audio is produced by third-party engines (ACE-Step 1.5, YuE2-3B, and the SheetSage2/MuScriptor tools built on top of them). Because of that:
+This repository's code is [MIT-licensed](LICENSE), provided as is without warranty. Keep the copyright and license notices when redistributing it. Original Remiqora author: Nikolay Cherkashin ([inikolax](https://github.com/inikolax)); upstream project: [inikolax/remiqora](https://github.com/inikolax/remiqora). Fork development is maintained in [mchosc/remiqora](https://github.com/mchosc/remiqora).
 
-- **The author of Remiqora takes no responsibility** for what happens to tracks generated through this app afterward — commercial or otherwise, published or private. Whatever you create, and how you use it next, is entirely your own responsibility.
-- **A generated track is covered by the license of whichever model produced it**, not by a license from this repository. The table above lists the *code* license — the *model weights* can be licensed differently:
-  - **ACE-Step 1.5** — both the code and the model weights are MIT-licensed, and the model's authors explicitly state the generated music can be used commercially.
-  - **YuE2-3B** — the model weights (unlike audio.cpp's own Apache-2.0 *code*) are distributed under **CC BY-NC 4.0**. That means tracks generated through YuE2 **cannot be used commercially** without separate permission from the rights holder, and attribution is required for any use.
-- Before publishing, monetizing, or otherwise distributing a generated track, **check the current license terms of that specific model** on its HuggingFace/weights page — those terms belong to the model's own rights holder and can change independently of this repository.
-- Remiqora is provided "as is", with no warranty of any kind. By using it, you accept that verifying a generated track's compliance with applicable law and with the license of the model that produced it is solely your responsibility.
-- **Attribution**: if you fork, copy, or build on Remiqora's code, keep the credit — a link back to this repository and to Nikolay Cherkashin ([inikolax](https://github.com/inikolax)) as the original author. The MIT license above already requires keeping the copyright notice in any copy; this is just that requirement spelled out plainly.
+The repository license does not replace the separate licenses or terms for engines, model weights, training/reference material or generated outputs. The table above describes code licenses. Check the terms supplied with the exact model weights and other material you use; this fork does not grant commercial rights to them. See [contributing](CONTRIBUTING.md) for attribution and model-license requirements.
 
 ---
 
 ## 📦 Installation
 
-There are two ways to install Remiqora: the **desktop app** (experimental, described first) or the **scripts** (Steps 0–2 below).
+Use a source checkout for this fork. Its scripts and experimental desktop packaging are described below; a complete fresh installation of this snapshot has not been verified on every platform. Use Python 3.12 and Node.js 22.12 or newer. Model setup downloads large third-party engines/weights and is separate from CPU regression tests.
+
+With Git installed, clone the maintained fork and run the following commands from its root:
+
+```sh
+git clone https://github.com/mchosc/remiqora.git
+cd remiqora
+```
 
 ### Desktop app (experimental)
 
-For anyone who would rather not use a terminal, Remiqora also comes as a **desktop app** for **Windows** (NVIDIA RTX 20-series or newer, driver 580 or newer) and **macOS** (Apple Silicon). It opens in its own window and sets everything up on the first launch, so there is no Git, Python, CUDA Toolkit or compiler to install. The Windows installer installs per user and needs no administrator rights.
+The source includes an Electron shell with first-run setup for **Windows** (NVIDIA RTX 20-series or newer, driver 580 or newer) and **macOS** (Apple Silicon). Fork packaging uses its own app ID and `Remiqora-mchosc-*` artifact names. There is no published **0.3.0-dev.0** installer; building one locally does not establish platform support.
 
-**Download (v0.2.1, pre-release):** [Windows installer (.exe)](https://github.com/inikolax/remiqora/releases/download/v0.2.1/Remiqora-Setup-0.2.1.exe) · [macOS installer (.dmg, Apple Silicon)](https://github.com/inikolax/remiqora/releases/download/v0.2.1/Remiqora-0.2.1-arm64.dmg) · [all files and SHA-256 sums](https://github.com/inikolax/remiqora/releases/tag/v0.2.1)
+**Historical upstream downloads (v0.2.1, without this fork's features):** [Windows installer (.exe)](https://github.com/inikolax/remiqora/releases/download/v0.2.1/Remiqora-Setup-0.2.1.exe) · [macOS installer (.dmg, Apple Silicon)](https://github.com/inikolax/remiqora/releases/download/v0.2.1/Remiqora-0.2.1-arm64.dmg) · [upstream files and SHA-256 sums](https://github.com/inikolax/remiqora/releases/tag/v0.2.1)
 
 <p align="center">
   <img src="docs/screenshots/en/12-desktop-check.png" alt="First launch: the app checks the GPU, driver, free space and connection, and asks where to keep models and projects" width="48%">
   <img src="docs/screenshots/en/13-desktop-download.png" alt="First launch: components downloading and installing, with overall and per-component progress" width="48%">
 </p>
 
-- **First launch.** The app checks the GPU, driver, free disk space and connection, lets you choose one folder for models and projects, and installs into it: the prebuilt audio.cpp engine (CUDA on Windows, Metal on macOS), ACE-Step, Demucs, the model weights and FFmpeg. Plan for roughly 30 GB of downloads and about 35 GB on disk (measured on Windows); the screen asks for 50 GB free. If it is interrupted, finished steps are skipped and downloads resume.
+- **First launch.** The setup checks the GPU, driver, free disk space and connection, offers a folder for models/projects, and installs audio.cpp, ACE-Step, Demucs, weights and FFmpeg. Upstream reported roughly 30 GB of downloads and 35 GB on disk on Windows; the setup asks for 50 GB free. These are historical estimates, not measurements of this fork's full installation.
 - **Every launch after that.** The app starts the server and opens the interface. Closing the window stops the model servers and frees the GPU.
-- **Where things live.** Models, the database, generated audio and logs stay in the folder you chose, and nothing is uploaded anywhere. The folder cannot be moved later, because the database stores absolute paths.
+- **Where things live.** The default data root is still `Remiqora`, even though the fork's desktop app identity and saved setup preferences are separate. An upstream custom-folder choice does not transfer automatically: after backup, explicitly select that existing folder, or choose a separate folder for testing. **Do not run the upstream app and fork against the same library at once.** Use the Settings data-folder migration workflow when changing storage; do not move database files by hand.
 
-**Status.** Experimental. The installers are not signed yet, so Windows shows a SmartScreen warning ("More info" → "Run anyway") and macOS may ask you to allow the app ("Open Anyway" in System Settings → Privacy & Security). The SHA-256 sum of every file is in `SHA256SUMS.txt` on the release page. To build an installer yourself instead:
+**Status.** Experimental and unsigned. A local installer build may trigger Windows/macOS security prompts. Fork release candidates require the manual platform and migration checks in [fork maintenance](docs/fork-maintenance.md). To build locally:
 
 ```sh
 cd frontend && npm ci && cd ../desktop && npm ci
-npm run dist    # Windows: dist/Remiqora-Setup-<version>.exe · macOS (run it on a Mac): dist/Remiqora-<version>-arm64.dmg
+npm run dist    # output: desktop/dist/Remiqora-mchosc-*; build macOS packages on a Mac
 ```
 
 [`desktop/README.md`](desktop/README.md) covers what the first run installs, the test switches and the known gaps.
 
-**What it is built with.** An [Electron](https://www.electronjs.org) shell around the same web UI and FastAPI backend, packaged with [electron-builder](https://www.electron.build) (an NSIS installer on Windows, a DMG on macOS). The first launch uses [uv](https://docs.astral.sh/uv/) for the Python environments, the [audio.cpp](https://github.com/0xShug0/audio.cpp) release binaries and static FFmpeg builds. Licenses are unchanged; in particular the YuE2-3B weights stay CC BY-NC 4.0.
+**What it is built with.** An [Electron](https://www.electronjs.org) shell around the web UI and FastAPI backend, packaged with [electron-builder](https://www.electron.build). First-run setup uses [uv](https://docs.astral.sh/uv/), [audio.cpp](https://github.com/0xShug0/audio.cpp) release binaries and static FFmpeg builds. Their licenses and model-weight terms remain separate from this fork's MIT license.
 
 ### Install from scripts
 
@@ -307,7 +314,8 @@ wasn't found at all, in which case the script says so and it needs setting
 by hand).
 
 Hard machine requirements the script can't remove: Windows, a CUDA-capable
-NVIDIA GPU (tested on an RTX 4080 16 GB), and an installed video driver.
+NVIDIA GPU, and an installed video driver. Upstream reported an RTX 4080
+16 GB run; this fork's Windows/GPU installation still needs verification.
 
 **On macOS (Apple Silicon):**
 ```sh
@@ -334,9 +342,10 @@ installed (`cmake` too, for `--from-source`).
 
 Hard machine requirements this path can't remove: macOS, Apple Silicon
 (M-series) for the default prebuilt path (Intel needs `--from-source`).
-Tested on a MacBook Air, Apple M5, 24 GB RAM — including a from-scratch run
+Upstream reported a MacBook Air, Apple M5, 24 GB RAM run — including a from-scratch run
 against a machine with no prior Homebrew packages or project state, all the
-way through generating audio with YuE2 on the Metal backend.
+way through generating audio with YuE2 on the Metal backend. This is not
+verification of a clean installation of this fork.
 This path is newer and less exercised than the Windows/CUDA one — expect it
 to be slower (Metal instead of CUDA). `--from-source` in particular may
 need occasional manual fixing up (a bumped commit pin) if audio.cpp's `dev`
@@ -349,9 +358,11 @@ tag instead, so it doesn't drift on its own.
 ```
 Builds audio.cpp with its native Linux CUDA backend, installs ACE-Step and Demucs in isolated environments, downloads the model weights, and writes `backend/.env`. It expects git, Python 3.11/3.12, uv, Node.js 20.19+ (or 22.12+), npm, CMake, ffmpeg, and a CUDA toolkit with nvcc plus cuBLAS/cuFFT development headers. The NVIDIA driver is deliberately not installed or modified.
 
-Tool paths are overrideable (`UV_BIN`, `NODE_BIN`, `NPM_BIN`, `CMAKE_BIN`, `NVCC_BIN`, `CUDA_TOOLKIT_PREFIX`, `CUDA_LIB_DIR`). On multi-GPU hosts, `ACE_STEP_DEVICE=0 YUE2_DEVICE=1 ./setup_linux.sh` pins the engines separately and enables concurrent model residency when the two explicit device values differ; leave either value unset (or set both to the same device) to retain the default exclusive switching behavior. Validated end-to-end on Ubuntu 24.04 x86_64 with NVIDIA CUDA.
+Tool paths are overrideable (`UV_BIN`, `NODE_BIN`, `NPM_BIN`, `CMAKE_BIN`, `NVCC_BIN`, `CUDA_TOOLKIT_PREFIX`, `CUDA_LIB_DIR`). On multi-GPU hosts, `ACE_STEP_DEVICE=0 YUE2_DEVICE=1 ./setup_linux.sh` pins the engines separately and enables concurrent model residency when the two explicit device values differ; leave either value unset (or set both to the same device) to retain the default exclusive switching behavior. Upstream reported Ubuntu 24.04/WSL2 NVIDIA CUDA verification; fresh fork installation and other Linux platforms remain unverified.
 
 ### Step 2: run
+
+Launchers install backend dependencies only when creating the virtualenv. **For an existing checkout, refresh dependencies before restarting:** on Windows, `backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt`; on macOS/Linux, `backend/.venv/bin/python3 -m pip install -r backend/requirements.txt`. Run `npm ci` in `frontend/` after dependency changes.
 
 ```cmd
 dev.bat
@@ -372,13 +383,15 @@ Stem separation's `demucs` uv project is set up by `setup_models.bat` above; the
 behavior, except the backend/frontend run as background jobs of the script
 itself (stop both with Ctrl+C) rather than in separate terminal windows.
 
+**Linux development:** use two terminals from the checkout: `cd backend && ./run.sh`, and `cd frontend && npm ci && npm run dev`. Open `http://localhost:5173` yourself; `dev.sh` uses macOS's `open` command. Both development and bundled launchers bind the backend to loopback by default.
+
 ---
 
 ## Audio versions and Settings
 
 The header's **Settings** page configures MP3 CBR/VBR, WAV bit depth, FLAC compression, sample rate/channels and the Data folder. Defaults affect future exports; queued and completed files keep their captured settings.
 
-Saved track cards offer **Audio versions** for original/cloned playback and **Voices & exports** for additional cloned voices and MP3/WAV/FLAC downloads. Each voice uses the retained original, and earlier versions remain available. Older missing originals cannot be reconstructed. See [audio export quality](docs/audio-export-quality.md) for defaults, source-quality limits and recovery behavior.
+Saved track cards offer **Audio versions** for original/cloned playback and **Voices & exports** for additional cloned voices and MP3/WAV/FLAC downloads. Selecting a completed format plays and downloads that exact file. Each voice uses the retained original, and earlier versions remain available. Older missing originals cannot be reconstructed. Each saved track has a persistent star; **Favorites only** combines with date filters and sorting. See [audio export quality](docs/audio-export-quality.md) for defaults, source-quality limits and recovery behavior.
 
 ## ⚙ Configuration (.env)
 

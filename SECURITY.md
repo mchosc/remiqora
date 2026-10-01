@@ -2,17 +2,17 @@
 
 ## Supported versions
 
-Remiqora is in active development and has no tagged releases yet. Security fixes are made on the latest `master` only.
+This maintained fork is in active development. Security fixes target the latest fork `master`; **0.3.0-dev.0** is an unreleased development snapshot. Inherited upstream tags and installers do not contain the fork's changes and are not maintained releases of this fork.
 
 ## Reporting a vulnerability
 
 Please **do not open a public issue** for security problems.
 
-Report them privately through GitHub: go to the [Security tab](https://github.com/inikolax/remiqora/security) and choose **Report a vulnerability** (or use [this direct link](https://github.com/inikolax/remiqora/security/advisories/new)). Include what you found, how to reproduce it, and the impact you see.
+Private vulnerability reporting is enabled for [mchosc/remiqora](https://github.com/mchosc/remiqora/security). Use [Report a vulnerability](https://github.com/mchosc/remiqora/security/advisories/new). Include the fork commit/version, sanitized reproduction steps, affected component and impact. Do not include personal recordings or credentials unless essential and explicitly requested.
 
-This is a solo, spare-time project, so I can't promise a fixed response time, but I will read every report and reply as soon as I can.
+There is no guaranteed response time or security-support SLA.
 
 ## Scope and deployment notes
 
 - Remiqora is designed to run **locally**. The launch scripts (`dev.*`, `prod_run.*`) bind the backend to `127.0.0.1`, and the app has **no authentication**. Do not expose its ports to a network or the internet.
-- Vulnerabilities in the underlying engines ([ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5), [audio.cpp](https://github.com/0xShug0/audio.cpp), [Demucs](https://github.com/adefossez/demucs)) should be reported to those projects. If you're unsure where a problem belongs, report it here and I'll help route it.
+- Vulnerabilities in underlying engines should be reported to their maintainers. If the vulnerable behavior is in this fork's integration, report it here. Include exact engine/model revisions; their licenses and security policies are separate from this repository's MIT license.

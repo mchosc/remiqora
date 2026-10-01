@@ -1,6 +1,6 @@
-appId: io.github.inikolax.remiqora
-productName: Remiqora
-copyright: Copyright © 2026 Nikolay Cherkashin
+appId: io.github.mchosc.remiqora
+productName: Remiqora (mchosc fork)
+copyright: Copyright © 2026 Nikolay Cherkashin and fork contributors
 directories:
   output: dist
   buildResources: build
@@ -32,8 +32,8 @@ nsis:
   oneClick: true            # per-user install, no administrator prompt
   perMachine: false
   deleteAppDataOnUninstall: false   # models and projects are the user's data, not ours to delete
-  artifactName: Remiqora-Setup-${version}.${ext}
-  shortcutName: Remiqora
+  artifactName: Remiqora-mchosc-Setup-${version}.${ext}
+  shortcutName: Remiqora (mchosc fork)
 
 mac:
   target:
@@ -43,16 +43,14 @@ mac:
       arch: [arm64]
   category: public.app-category.music
   icon: build/icon.png
-  # Unsigned: a .dmg built on the Mac itself was installed from Applications and ran fine on Apple Silicon.
-  # A downloaded build carries the quarantine flag and will need a manual "Open Anyway" (or xattr -dr
-  # com.apple.quarantine). Ad-hoc signing (identity "-" with hardenedRuntime false) is the documented next step
-  # for distribution but has NOT been tried on a Mac; a Developer ID and notarization is the real fix.
+  # Experimental unsigned builds; clean-install and downloaded-build behavior
+  # must be verified for each fork candidate before publishing.
   identity: null
-  artifactName: Remiqora-${version}-${arch}.${ext}
+  artifactName: Remiqora-mchosc-${version}-${arch}.${ext}
 
-# Packaging works; the first-run setup reports "unsupported" on Linux until it has scripts (see PR #2).
+# Linux packaging is experimental; first-run setup currently reports unsupported.
 linux:
   target: [AppImage]
   category: AudioVideo
   icon: build/icon.png
-  artifactName: Remiqora-${version}-${arch}.${ext}
+  artifactName: Remiqora-mchosc-${version}-${arch}.${ext}

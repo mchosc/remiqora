@@ -6,7 +6,8 @@ body:
     attributes:
       value: |
         Thanks for the report! Issues can be written in English or Russian.
-        For questions and "how do I…", please use [Discussions](https://github.com/inikolax/remiqora/discussions) instead.
+        For questions and "how do I…", use this [fork's issues](https://github.com/mchosc/remiqora/issues).
+        Never upload secrets, private recordings or unsanitized logs.
   - type: dropdown
     id: area
     attributes:
@@ -14,6 +15,10 @@ body:
       options:
         - ACE-Step generation
         - YuE2 generation
+        - Voice preparation / cloning / replacement
+        - Audio versions / playback / export settings
+        - Video studio
+        - Library / favorites / data folders
         - Stem separation (Demucs)
         - MIDI transcription (MuScriptor)
         - SheetSage2
@@ -68,7 +73,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant terminal output, or files from `backend/logs/` (e.g. `ace_step_api.log`). Please trim to the relevant part.
+      description: Relevant terminal output or logs from your configured data folder. Trim to the relevant part and remove tokens, private paths and recording details.
       render: shell
   - type: checkboxes
     id: checks
