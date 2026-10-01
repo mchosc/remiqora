@@ -33,7 +33,7 @@ afterEach(()=>{app?.unmount();app=undefined;document.body.replaceChildren()})
 async function mount(card:'ace'|'yue', batch=false, view: 'cards' | 'list' = 'cards', replacement = false) {
   const common={id:'saved_42',status:'done',createdAt:Date.now(),voiceApply:'running',voiceName:'Singer'}
   const ace:AceJob={...common,status:'done',voiceApply:'running',voiceProgress:conversionProgress,progress:100,shortIds:batch?[42,43]:[42],finalized:true,title:'Song',audioFormat:'mp3',batchSize:batch?2:1,lyrics:'',dbIds:batch?[42,43]:[42],audioUrls:batch?['/batch-a.wav','/batch-b.wav']:[], origin: replacement ? 'upload' : 'ace_step', params: replacement ? { source: 'voice_replacement', source_track_id: 40 } : {} }
-  const yue:Yue2Job={...common,status:'done',voiceApply:'running',voiceProgress:conversionProgress,style:'Song',lyrics:'',finalized:true,seed:7,cot:'off',precision:'q8_0',dbId:42,audioUrl:'/latest.wav'}
+  const yue:Yue2Job={...common,status:'done',voiceApply:'running',voiceProgress:conversionProgress,title:'Song',style:'Song',lyrics:'',finalized:true,seed:7,cot:'off',precision:'q8_0',dbId:42,audioUrl:'/latest.wav'}
   app=createApp({render:()=>card==='ace'?h(JobCard,{job:ace,number:'42',view}):h(TrackCard,{job:yue,number:'42',view})}).use(createPinia()).use(i18n)
   app.component('RouterLink',{props:['to'],template:'<a :href="to"><slot /></a>'})
   const node=document.body.appendChild(document.createElement('div'));app.mount(node)

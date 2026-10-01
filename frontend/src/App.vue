@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useOrchestratorStore } from './stores/orchestrator'
 import AppHeader from './components/shared/AppHeader.vue'
+import AppFooter from './components/shared/AppFooter.vue'
 
 const orchestrator = useOrchestratorStore()
 const { t } = useI18n()
@@ -24,4 +25,5 @@ onBeforeUnmount(() => orchestrator.stopPolling())
       </Transition>
     </router-view>
   </main>
+  <AppFooter />
 </template>

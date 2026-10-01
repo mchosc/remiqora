@@ -2,7 +2,11 @@ import { videoWorkspaceEn, videoErrorsEn } from './videoWorkspace'
 import { settingsWorkspaceEn } from './settingsWorkspace'
 import { trackAudioEn } from './trackAudio'
 import { trackFavoritesEn } from './trackFavorites'
+import { upstreamLibraryEn } from './upstreamLibrary'
+import { upstreamWorkspaceEn } from './upstreamWorkspace'
 export default {
+  ...upstreamLibraryEn,
+  upstreamWorkspace: upstreamWorkspaceEn,
   trackFavorites: trackFavoritesEn,
   trackAudio: trackAudioEn,
   videoWorkspace: videoWorkspaceEn,
@@ -915,6 +919,7 @@ export default {
     },
   },
   editor: {
+    playbackFailed: 'Could not start audio playback.',
     backToProjects: '← Back to projects',
     unsavedTitle: 'There are unsaved changes',
     saving: 'Saving…',

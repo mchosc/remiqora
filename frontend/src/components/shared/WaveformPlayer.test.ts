@@ -115,3 +115,16 @@ it('exposes keyboard seeking and reports native media errors', async () => {
   await settle()
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
 })
+
+it('reports actual playback transitions so pagination can retain the playing card', async () => {
+  const states: boolean[] = []
+  app = createApp({ render: () => h(WaveformPlayer, { src: '/retained.wav', onPlaying: (value: boolean) => states.push(value) }) }).use(i18n)
+  const container = document.body.appendChild(document.createElement('div')); app.mount(container); await settle()
+  const audio = container.querySelector('audio')
+  if (!audio) throw new Error('Missing audio')
+  audio.dispatchEvent(new Event('play')); await settle()
+  expect(states.at(-1)).toBe(true)
+  audio.dispatchEvent(new Event('pause')); await settle(); expect(states.at(-1)).toBe(false)
+  audio.dispatchEvent(new Event('play')); await settle()
+  app.unmount(); app = undefined; expect(states.at(-1)).toBe(false)
+})

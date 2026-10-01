@@ -4,6 +4,8 @@ import { createApp, h, nextTick, ref, type App } from 'vue'
 import TrackAudioVersions from './TrackAudioVersions.vue'
 import { i18n, setLocale } from '../../i18n'
 import type { AudioVersion, AudioExportResponse, VoiceJobProgress } from '../../api/contracts'
+import * as downloadApi from '../../api/trackDownload'
+vi.mock('../../api/trackDownload', () => ({ downloadTrackAudio: vi.fn() }))
 const api = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), cancel: vi.fn(), retry: vi.fn(), exports: vi.fn(), export: vi.fn(), cancelExport: vi.fn(), retryExport: vi.fn(), voices: vi.fn() }))
 vi.mock('../../api/audioVersions', () => ({ listAudioVersions: api.list, createAudioVersion: api.create, cancelAudioVersion: api.cancel, retryAudioVersion: api.retry }))
 vi.mock('../../api/audioExports', () => ({ listAudioExports: api.exports, createAudioExport: api.export, cancelAudioExport: api.cancelExport, retryAudioExport: api.retryExport }))
@@ -25,7 +27,7 @@ beforeEach(() => {
   api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, voice] }); api.voices.mockResolvedValue([{ id: 'c'.repeat(32), name: 'Other singer', usable: true }]); api.exports.mockResolvedValue({ exports: [] }); api.create.mockResolvedValue(queued); api.export.mockResolvedValue(exported)
 })
 afterEach(() => { app?.unmount(); app = undefined; document.body.replaceChildren(); vi.useRealTimers() })
-function mount(fallbackAudioUrl?: string, fallbackFilename?: string) { currentTrack = ref(42); const node = document.body.appendChild(document.createElement('div')); app = createApp({ render: () => h(TrackAudioVersions, { trackId: currentTrack.value, fallbackAudioUrl, fallbackFilename }) }).use(i18n); app.component('RouterLink', { props: ['to'], template: '<a :href="to"><slot /></a>' }); app.mount(node); return node }
+function mount(fallbackAudioUrl?: string, fallbackFilename?: string, onPlaying?: (value: boolean) => void) { currentTrack = ref(42); const node = document.body.appendChild(document.createElement('div')); app = createApp({ render: () => h(TrackAudioVersions, { trackId: currentTrack.value, fallbackAudioUrl, fallbackFilename, onPlaying }) }).use(i18n); app.component('RouterLink', { props: ['to'], template: '<a :href="to"><slot /></a>' }); app.mount(node); return node }
 async function settle() { for (let i=0;i<12;i++) await nextTick() }
 function button(node: HTMLElement, text: string) { const found = [...node.querySelectorAll('button')].find(item => item.textContent?.trim() === text); if (!found) throw new Error(`Missing ${text}`); return found }
 function formatButton(node: HTMLElement, prefix: string) {
@@ -34,7 +36,28 @@ function formatButton(node: HTMLElement, prefix: string) {
   return found
 }
 function exportsForOriginal(items: AudioExportResponse[] = [exported]) { api.exports.mockImplementation((_trackId: number, versionId: string) => Promise.resolve({ exports: versionId === original.id ? items : [] })) }
+it('forwards playing and processing state for cards retained by pagination', async () => {
+  const playing: boolean[] = [], processing: boolean[] = []
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, queued] })
+  const node = document.body.appendChild(document.createElement('div'))
+  app = createApp({ render: () => h(TrackAudioVersions, { trackId: 42, onPlaying: (value: boolean) => playing.push(value), onProcessing: (value: boolean) => processing.push(value) }) }).use(i18n)
+  app.component('RouterLink', { props: ['to'], template: '<a :href="to"><slot /></a>' }); app.mount(node); await settle()
+  expect(processing.at(-1)).toBe(true)
+  node.querySelector('audio')?.dispatchEvent(new Event('play')); await settle(); expect(playing.at(-1)).toBe(true)
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, voice] })
+  button(node, 'Refresh').click(); await settle(); expect(processing.at(-1)).toBe(false)
+  app.unmount(); app = undefined; expect(playing.at(-1)).toBe(false)
+})
 it('switches between immutable original and voice playback and downloads', async () => { const node = mount(); await settle(); expect(node.querySelector('audio')?.src).toContain('/voice.wav'); button(node, 'Original').click(); await settle(); expect(node.querySelector('audio')?.src).toContain('/original.wav'); expect(node.querySelector('a[download]')?.getAttribute('href')).toBe('/original.wav'); expect(api.exports).toHaveBeenLastCalledWith(42, original.id, expect.any(AbortSignal)) })
+it('tags the exact selected export without changing playback or raw download selection', async () => {
+  exportsForOriginal(); vi.mocked(downloadApi.downloadTrackAudio).mockResolvedValue({ blob: new Blob(['audio']), filename: 'Singer - Song.mp3' })
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {}); vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  const node = mount(); await settle(); button(node, 'Original').click(); await settle(); formatButton(node, 'MP3').click(); await settle()
+  button(node, 'Download with metadata').click(); await settle()
+  expect(downloadApi.downloadTrackAudio).toHaveBeenCalledWith(42, original.id, exported.id, undefined, expect.any(AbortSignal))
+  expect(node.querySelector('audio')?.getAttribute('src')).toBe('/original.mp3'); expect(node.querySelector('a[download]')?.getAttribute('href')).toBe('/original.mp3')
+  app?.unmount(); app = undefined; expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download')
+})
 it('creates another voice without altering the existing versions', async () => { const node = mount(); await settle(); button(node, 'Add voice version').click(); await settle(); expect(api.create).toHaveBeenCalledWith(42, 'c'.repeat(32), expect.any(AbortSignal)); expect(node.textContent).toContain('Other singer'); button(node, 'Original').click(); await settle(); expect(node.querySelector('audio')?.src).toContain('/original.wav') })
 it('exports the selected version and shows the captured quality', async () => { const node = mount(); await settle(); button(node, 'Original').click(); await settle(); button(node, 'Create export').click(); await settle(); expect(api.export).toHaveBeenCalledWith(42, original.id, 'mp3', expect.any(AbortSignal)); expect(node.textContent).toContain('320 kbps'); expect(node.querySelector('a[href="/original.mp3"]')?.hasAttribute('download')).toBe(true) })
 it('does not offer another conversion when the original is unavailable', async () => { api.list.mockResolvedValue({ track_id:42, original_available:false, versions:[voice] }); const node=mount(); await settle(); expect(button(node, 'Add voice version').disabled).toBe(true); expect(node.textContent).toContain('original audio is unavailable') })
@@ -162,6 +185,65 @@ it('only starts the latest file when choices arrive in the same render cycle', a
   formatButton(node, 'MP3').click(); button(node, 'Singer').click(); await settle()
   expect(playedSources).toEqual(['/voice.wav'])
   expect(node.querySelector('audio')?.getAttribute('src')).toBe('/voice.wav')
+})
+
+it('retains playback ownership throughout an explicit file transition and releases it on pause', async () => {
+  const playing: boolean[] = []
+  exportsForOriginal()
+  const node = mount(undefined, undefined, value => playing.push(value)); await settle()
+  button(node, 'Original').click(); await settle(); playing.length = 0
+  formatButton(node, 'MP3').click(); await settle()
+  expect(playing).not.toContain(false)
+  node.querySelector<HTMLButtonElement>('button[aria-label="Pause"]')?.click(); await settle()
+  expect(playing.at(-1)).toBe(false)
+})
+
+it('does not let an older play completion release a newer pending source request', async () => {
+  const playing: boolean[] = []
+  let finishOld: (() => void) | undefined, rejectNew: ((cause: unknown) => void) | undefined
+  vi.mocked(HTMLMediaElement.prototype.play).mockImplementationOnce(function (this: HTMLMediaElement) {
+    this.dispatchEvent(new Event('play'))
+    return new Promise<void>(resolve => { finishOld = resolve })
+  }).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectNew = reject }))
+  const node = mount(undefined, undefined, value => playing.push(value)); await settle()
+  button(node, 'Original').click(); await settle()
+  button(node, 'Singer').click(); await settle()
+  finishOld?.(); await settle()
+  expect(playing.at(-1)).toBe(true)
+  rejectNew?.(new DOMException('Denied', 'NotAllowedError')); await settle()
+  expect(playing.at(-1)).toBe(false)
+})
+
+it('releases cancelled ownership when the track changes before a requested file starts', async () => {
+  const playing: boolean[] = []
+  const node = mount(undefined, undefined, value => playing.push(value)); await settle()
+  button(node, 'Original').click()
+  currentTrack.value = 43; await settle()
+  expect(playing).toEqual([true, false])
+  expect(playedSources).toEqual([])
+})
+
+it('releases cancelled ownership when an unavailable version supersedes a pending file choice', async () => {
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, queued] })
+  const playing: boolean[] = []
+  const node = mount(undefined, undefined, value => playing.push(value)); await settle()
+  button(node, 'Original').click(); button(node, 'Other singer · Queued').click(); await settle()
+  expect(playing).toEqual([true, false])
+  expect(playedSources).toEqual([])
+})
+
+it('releases an unmounted pending start and ignores its late completion', async () => {
+  const playing: boolean[] = []
+  let finish: (() => void) | undefined
+  vi.mocked(HTMLMediaElement.prototype.play).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+  const node = mount(undefined, undefined, value => playing.push(value)); await settle()
+  button(node, 'Original').click(); await settle()
+  expect(playing.at(-1)).toBe(true)
+  app?.unmount(); app = undefined
+  const before = [...playing]
+  finish?.(); await settle()
+  expect(playing).toEqual(before)
+  expect(playing.at(-1)).toBe(false)
 })
 
 it('returns to the native source when the selected export becomes unavailable', async () => {

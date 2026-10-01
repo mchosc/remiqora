@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import LibraryFolder from '../../components/shared/LibraryFolder.vue'
+import ArtistSettings from './ArtistSettings.vue'
 import { getAudioSettings, saveAudioSettings, type CompleteAudioEncodingSettings } from '../../api/audioSettings'
 import { parseAudioEncodingSettings } from '../../api/contracts'
 
@@ -177,6 +178,7 @@ onBeforeUnmount(() => { active = false; operation++; controller?.abort(); contro
       <p v-if="notice" role="status" class="text-sm text-status-done">{{ notice }}</p>
     </section>
     <LibraryFolder />
+    <ArtistSettings />
   </div>
 </template>
 

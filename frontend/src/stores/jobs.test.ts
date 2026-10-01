@@ -200,7 +200,7 @@ describe('background poll lifecycle', () => {
   })
   it('retains the measured terminal receipt after YuE2 voice polling resolves its audio URL', async () => {
     const store = useYue2Store()
-    store.jobs = [{ id: 'saved_17', status: 'done', createdAt: 100, style: 'Title', lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, dbId: 17, voiceApply: 'running' }]
+    store.jobs = [{ id: 'saved_17', status: 'done', createdAt: 100, title: 'Title', style: 'Title', lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, dbId: 17, voiceApply: 'running' }]
     const terminal = { ...voiceProgress, status: 'done', phase: 'complete', finished_at: 250 } satisfies VoiceJobProgress
     vi.mocked(waitForVoiceApply).mockImplementation(async (_trackId, onUpdate) => {
       onUpdate?.({ status: 'done', phase: 'mixing', error: '', error_code: '', audio_url: '/done.wav', job_progress: terminal })
@@ -229,7 +229,7 @@ describe('background poll lifecycle', () => {
     const response = deferred<string>()
     vi.mocked(waitForVoiceApply).mockReturnValue(response.promise)
     const store = useYue2Store()
-    const job = { id: 'saved_17', status: 'done', createdAt: 100, style: 'Title', lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, dbId: 17, voiceApply: 'running' } satisfies import('./yue2').Yue2Job
+    const job = { id: 'saved_17', status: 'done', createdAt: 100, title: 'Title', style: 'Title', lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, dbId: 17, voiceApply: 'running' } satisfies import('./yue2').Yue2Job
     store.jobs = [job]
     store._followVoice(store.jobs[0])
     const signal = vi.mocked(waitForVoiceApply).mock.calls[0]?.[2]

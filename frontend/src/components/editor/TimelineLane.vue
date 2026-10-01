@@ -90,13 +90,14 @@ function bufferFor(clip: Clip): AudioBuffer | null {
         <input
           :value="lane.name"
           :placeholder="t('timeline.trackNamePlaceholder')"
-          class="flex-1 min-w-0 rounded border border-transparent bg-panel/50 px-1 py-0.5 text-[11px] font-medium text-text focus:border-accent1/50 focus:bg-panel focus:outline-none transition-colors"
+          :aria-label="t('timeline.trackNamePlaceholder')"
+          class="flex-1 min-w-0 rounded border border-transparent bg-panel/50 px-1 py-0.5 text-[11px] font-medium text-text focus:border-accent1/50 focus:bg-panel focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent1 transition-colors"
           @input="emit('rename', ($event.target as HTMLInputElement).value)"
           @change="emit('dragEnd')"
         />
         <button
           type="button"
-          class="w-5 h-5 flex items-center justify-center rounded text-[9px] font-medium transition-all active:scale-95"
+          class="w-5 h-5 flex items-center justify-center rounded text-[11px] font-medium transition-all active:scale-95"
           :class="lane.settings.muted ? 'bg-status-failed text-white shadow-[0_0_8px_var(--color-status-failed)]' : 'bg-panel text-text-dim hover:text-white'"
           :aria-pressed="!!lane.settings.muted"
           :aria-label="t('timeline.muteTrack')"
@@ -107,7 +108,7 @@ function bufferFor(clip: Clip): AudioBuffer | null {
         </button>
         <button
           type="button"
-          class="w-5 h-5 flex items-center justify-center rounded text-[9px] font-medium transition-all active:scale-95"
+          class="w-5 h-5 flex items-center justify-center rounded text-[11px] font-medium transition-all active:scale-95"
           :class="lane.settings.solo ? 'accent-gradient text-white shadow-[0_0_8px_var(--color-accent1)]' : 'bg-panel text-text-dim hover:text-white'"
           :aria-pressed="!!lane.settings.solo"
           :aria-label="t('timeline.soloTrack')"
@@ -120,7 +121,7 @@ function bufferFor(clip: Clip): AudioBuffer | null {
 
       <!-- Row 2: Vol, Range, Delete -->
       <div class="flex items-center gap-1.5 px-0.5">
-        <span class="text-[8px] text-text-dim font-bold tracking-wider">{{ t('timeline.volume') }}</span>
+        <span class="text-[11px] text-text-dim font-bold tracking-wider">{{ t('timeline.volume') }}</span>
         <input
           type="range"
           min="0" max="1.5" step="0.01"
@@ -172,6 +173,7 @@ function bufferFor(clip: Clip): AudioBuffer | null {
         :clip="clip"
         :px-per-second="pxPerSecond"
         :buffer="bufferFor(clip)"
+        :source-duration="clip.sourceUrl ? buffers.get(clip.sourceUrl)?.duration : undefined"
         :snap-candidates="snapCandidates"
         :grid-step-sec="gridStepSec"
         :snap-enabled="snapEnabled"

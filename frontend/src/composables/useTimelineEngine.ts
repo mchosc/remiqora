@@ -9,7 +9,8 @@
  * silently orphan connected AudioNodes with no disconnect() ever firing.
  */
 import { getSharedAudioCtx } from './audioPlayback'
-import { decodeStem, getChannelLevel, getReverbImpulse } from '../audio/mixerEngine'
+import { buildChannel, decodeStem, disconnectChannel, getChannelLevel, getReverbImpulse } from '../audio/mixerEngine'
+import type { BuiltChannel } from '../audio/mixerEngine'
 import {
   applyLaneSettings,
   applyMasterSettings,
@@ -25,16 +26,29 @@ import type { TimelineProject } from '../audio/timelineTypes'
 
 export function useTimelineEngine() {
   let graph: TimelineGraph | null = null
-  let playback: TimelinePlaybackHandle | null = null
+  const laneChannels = new Map<string, BuiltChannel>()
+  let passes: TimelinePlaybackHandle[] = []
   let seekToken = 0
 
-  function ensureGraph(laneCount: number): TimelineGraph {
+  function ensureGraph(laneIds: readonly string[]): TimelineGraph {
     const ctx = getSharedAudioCtx()
-    if (!graph || graph.lanes.length !== laneCount) {
-      stop()
-      if (graph) disconnectTimelineGraph(graph)
-      graph = buildTimelineGraph(ctx, laneCount, getReverbImpulse(ctx.sampleRate))
+    if (!graph) graph = buildTimelineGraph(ctx, 0, getReverbImpulse(ctx.sampleRate))
+    const ids = new Set(laneIds)
+    for (const [id, channel] of laneChannels) {
+      if (!ids.has(id)) {
+        disconnectChannel(channel)
+        laneChannels.delete(id)
+      }
     }
+    const master = graph.master
+    graph.lanes = laneIds.map((id) => {
+      const existing = laneChannels.get(id)
+      if (existing) return existing
+      const channel = buildChannel(ctx, false, getReverbImpulse(ctx.sampleRate))
+      channel.output.connect(master.input)
+      laneChannels.set(id, channel)
+      return channel
+    })
     return graph
   }
 
@@ -140,26 +154,46 @@ export function useTimelineEngine() {
     return clips
   }
 
-  async function play(project: TimelineProject, buffers: Map<string, AudioBuffer>, fromSec: number, onEnded: () => void): Promise<void> {
-    const g = ensureGraph(project.lanes.length)
+  /** Resolves with the actual scheduled start, or null when superseded. */
+  async function play(project: TimelineProject, buffers: Map<string, AudioBuffer>, fromSec: number, untilSec = Infinity): Promise<number | null> {
+    const g = ensureGraph(project.lanes.map((lane) => lane.id))
     const token = ++seekToken
     await getSharedAudioCtx().resume()
-    if (token !== seekToken || graph !== g) return // superseded, rebuilt, or torn down while awaiting resume
-    playback?.stop()
+    if (token !== seekToken || graph !== g) return null
+    // Retaining the master means graph identity alone no longer detects a
+    // different set/order of lanes appearing while audio activation is pending.
+    if (project.lanes.length !== g.lanes.length
+      || project.lanes.some((lane, index) => laneChannels.get(lane.id) !== g.lanes[index])) return null
+    stopPasses()
     applySettings(project)
-    playback = scheduleTimeline(g, toScheduledClips(project, buffers), fromSec, g.ctx.currentTime + 0.05, onEnded)
+    const startAt = g.ctx.currentTime + 0.05
+    // Project completion belongs to the transport clock, including silent clips.
+    passes = [scheduleTimeline(g, toScheduledClips(project, buffers), fromSec, startAt, () => {}, untilSec)]
+    return startAt
+  }
+
+  /** Queue one loop pass at the prior pass's exact audio boundary. */
+  function queuePass(project: TimelineProject, buffers: Map<string, AudioBuffer>, fromSec: number, untilSec: number, ctxStartTime: number): void {
+    if (!graph || passes.length === 0) return
+    passes.push(scheduleTimeline(graph, toScheduledClips(project, buffers), fromSec, ctxStartTime, () => {}, untilSec))
+    while (passes.length > 2) passes.shift()?.stop()
+  }
+
+  function stopPasses(): void {
+    for (const pass of passes) pass.stop()
+    passes = []
   }
 
   function stop(): void {
     seekToken++ // invalidate any in-flight play()
-    playback?.stop()
-    playback = null
+    stopPasses()
   }
 
   function teardown(): void {
     stop()
     if (graph) disconnectTimelineGraph(graph)
     graph = null
+    laneChannels.clear()
   }
 
   async function render(project: TimelineProject, buffers: Map<string, AudioBuffer>, totalDurationSec: number): Promise<AudioBuffer> {
@@ -179,5 +213,5 @@ export function useTimelineEngine() {
     return getChannelLevel(graph.master)
   }
 
-  return { ensureGraph, applySettings, decodeAll, toScheduledClips, play, stop, teardown, render, getLaneLevel, getMasterLevel }
+  return { ensureGraph, applySettings, decodeAll, toScheduledClips, play, queuePass, stop, teardown, render, getLaneLevel, getMasterLevel }
 }

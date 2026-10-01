@@ -21,6 +21,9 @@
 
 Video setup, the saved-project workflow, CPU testing and model limitations: [Video studio guide](docs/video-studio.md).
 
+Reviewed upstream adaptations, preserved fork workflows and verification limits:
+[October 2026 integration notes](docs/upstream-integration-2026-10-01.md).
+
 This fork focuses on local music, voice and video creation: reliable singer preparation, retained audio sources and explicit export settings, persistent favorites, and recoverable jobs/projects. These features are implemented but experimental. CPU and mocked-model tests do not establish GPU quality, Windows support or a clean installation; the [roadmap](ROADMAP.md) records the remaining verification. Installation and data integrity take priority over adding more models.
 
 <p align="center">

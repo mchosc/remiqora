@@ -32,7 +32,6 @@ function emptyProject(): TimelineProject {
     pxPerSecond: DEFAULT_PX_PER_SECOND,
     bpm: 120,
     snapEnabled: true,
-    loopRegion: { start: 0, end: 10, enabled: false },
   }
 }
 
@@ -310,18 +309,22 @@ export const useEditorStore = defineStore('editor', {
     },
     toggleLoop() {
       if (!this.project.loopRegion) {
-        this.project.loopRegion = { start: 0, end: 10, enabled: true }
+        this.project.loopRegion = { start: 0, end: this.totalDuration > 0.1 ? this.totalDuration : 10, enabled: true }
       } else {
         this.project.loopRegion.enabled = !this.project.loopRegion.enabled
       }
       this.snapshot()
     },
     setLoopRegion(start: number, end: number) {
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return
+      const boundedStart = Math.max(0, start)
+      const boundedEnd = Math.max(boundedStart + 0.1, end)
+      if (!Number.isFinite(boundedEnd) || boundedEnd - boundedStart < 0.1 - 1e-9) return
       if (this.project.loopRegion) {
-        this.project.loopRegion.start = Math.max(0, start)
-        this.project.loopRegion.end = Math.max(start + 0.1, end)
+        this.project.loopRegion.start = boundedStart
+        this.project.loopRegion.end = boundedEnd
       } else {
-        this.project.loopRegion = { start: Math.max(0, start), end: Math.max(start + 0.1, end), enabled: true }
+        this.project.loopRegion = { start: boundedStart, end: boundedEnd, enabled: true }
       }
     },
   },

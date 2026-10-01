@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useOrchestratorStore } from '../stores/orchestrator'
 import { MODEL_LABELS, useModelSwitch } from '../composables/useModelSwitch'
@@ -7,6 +7,9 @@ import * as projectsApi from '../api/projects'
 import type { ProjectSummary } from '../api/projects'
 import type { ModelId } from '../types'
 import VoiceSelect from '../components/shared/VoiceSelect.vue'
+import TrackAudioVersions from '../components/shared/TrackAudioVersions.vue'
+import * as tracksApi from '../api/tracks'
+import type { SavedTrack } from '../api/contracts'
 
 const orchestrator = useOrchestratorStore()
 const { selectModel } = useModelSwitch()
@@ -19,21 +22,30 @@ const DESCRIPTION_KEYS: Record<ModelId, string> = {
 }
 
 const recentProjects = ref<ProjectSummary[]>([])
+const recentTracks = ref<SavedTrack[]>([])
+const loading = ref(false)
+const tracksFailed = ref(false)
+const projectsFailed = ref(false)
+let active = true
+let generation = 0
+let request: AbortController | null = null
 
-async function loadProjects() {
-  try {
-    const list = await projectsApi.listProjects()
-    recentProjects.value = list
-      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-      .slice(0, 3)
-  } catch {
-    // Ignore errors for now
-  }
+async function loadRecent() {
+  if (loading.value) return
+  const token = ++generation
+  request?.abort(); request = new AbortController()
+  loading.value = true
+  const [projects, tracks] = await Promise.allSettled([projectsApi.listProjects(), tracksApi.listTracks(undefined, request.signal)])
+  if (!active || token !== generation) return
+  projectsFailed.value = projects.status === 'rejected'
+  tracksFailed.value = tracks.status === 'rejected'
+  if (projects.status === 'fulfilled') recentProjects.value = [...projects.value].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)).slice(0, 3)
+  if (tracks.status === 'fulfilled') recentTracks.value = [...tracks.value].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id).slice(0, 5)
+  loading.value = false
 }
 
-onMounted(() => {
-  loadProjects()
-})
+onMounted(() => { void loadRecent() })
+onBeforeUnmount(() => { active = false; ++generation; request?.abort() })
 
 async function onPick(id: ModelId) {
   try {
@@ -67,6 +79,19 @@ async function onPick(id: ModelId) {
       </button>
     </div>
 
+    <section class="mt-12 space-y-4 text-left" :aria-label="t('upstreamWorkspace.recentTracks')">
+      <h2 class="text-lg font-semibold text-text">{{ t('upstreamWorkspace.recentTracks') }}</h2>
+      <p v-if="loading" role="status" class="text-sm text-text-dim">{{ t('common.loading') }}</p>
+      <p v-if="tracksFailed || projectsFailed" role="alert" class="text-sm text-status-failed">
+        {{ tracksFailed ? t('upstreamWorkspace.recentFailed') : t('upstreamWorkspace.libraryFailed') }}
+        <button type="button" :disabled="loading" class="ml-2 text-accent1 underline" @click="loadRecent">{{ t('upstreamWorkspace.retry') }}</button>
+      </p>
+      <p v-if="!loading && !tracksFailed && !recentTracks.length" class="text-sm text-text-dim">{{ t('upstreamWorkspace.noTracks') }}</p>
+      <article v-for="track in recentTracks" :key="track.id" class="space-y-3 rounded-xl border border-border bg-panel p-4">
+        <h3 class="text-sm font-semibold text-text"><span v-if="track.short_id" class="mr-2 font-normal tabular-nums text-text-dim">{{ track.short_id }}</span>{{ track.title || t('library.untitled') }}</h3>
+        <TrackAudioVersions :track-id="track.id" :fallback-audio-url="track.audio_url" :fallback-filename="track.filename" />
+      </article>
+    </section>
     <!-- Recent projects -->
     <div v-if="recentProjects.length > 0" class="mt-16 text-left">
       <div class="flex items-center justify-between mb-4">
@@ -86,8 +111,5 @@ async function onPick(id: ModelId) {
       </div>
     </div>
     
-    <footer class="mt-20 pt-8 border-t border-border/60 text-center">
-      <p class="text-xs text-text-dim">{{ t('home.footer') }}</p>
-    </footer>
   </div>
 </template>

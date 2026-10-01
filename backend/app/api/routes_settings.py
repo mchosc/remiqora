@@ -21,9 +21,26 @@ from ..data_root import (
 from ..client_contracts import LibraryPickResponse, LibraryStatusResponse
 
 from ..client_contracts import LibraryRequest
+from ..artist_settings import ArtistSettings, ArtistSettingsError, get_settings, save_settings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@router.get("", response_model=ArtistSettings)
+def get_artist_settings() -> ArtistSettings:
+    try:
+        return get_settings()
+    except ArtistSettingsError as exc:
+        raise HTTPException(503, detail=exc.code) from exc
+
+
+@router.put("", response_model=ArtistSettings)
+def put_artist_settings(body: ArtistSettings) -> ArtistSettings:
+    try:
+        return save_settings(body)
+    except ArtistSettingsError as exc:
+        raise HTTPException(503, detail=exc.code) from exc
 
 
 def _blocked() -> list[Path]:

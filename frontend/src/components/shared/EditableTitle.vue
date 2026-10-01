@@ -6,6 +6,7 @@ const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: string
+  displayText?: string
   placeholder?: string
   editable?: boolean
 }>()
@@ -50,12 +51,13 @@ function cancel(): void {
       @click.stop
     />
     <template v-else>
-      <p class="min-w-0 flex-1 truncate text-sm font-medium text-text">{{ modelValue || placeholder }}</p>
+      <p :title="modelValue" class="min-w-0 flex-1 truncate text-base font-semibold text-text">{{ displayText || modelValue || placeholder }}</p>
       <button
         v-if="editable"
         type="button"
-        class="shrink-0 text-text-dim hover:text-text"
+        class="flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg text-text-dim hover:bg-panel-2 hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent1"
         :title="t('common.rename')"
+        :aria-label="t('common.rename')"
         @click.stop="startEdit"
       >
         ✎

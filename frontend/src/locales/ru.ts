@@ -2,7 +2,11 @@ import { videoWorkspaceRu, videoErrorsRu } from './videoWorkspace'
 import { settingsWorkspaceRu } from './settingsWorkspace'
 import { trackAudioRu } from './trackAudio'
 import { trackFavoritesRu } from './trackFavorites'
+import { upstreamLibraryRu } from './upstreamLibrary'
+import { upstreamWorkspaceRu } from './upstreamWorkspace'
 export default {
+  ...upstreamLibraryRu,
+  upstreamWorkspace: upstreamWorkspaceRu,
   trackFavorites: trackFavoritesRu,
   trackAudio: trackAudioRu,
   videoWorkspace: videoWorkspaceRu,
@@ -915,6 +919,7 @@ export default {
     },
   },
   editor: {
+    playbackFailed: 'Не удалось начать воспроизведение аудио.',
     backToProjects: '← К списку проектов',
     unsavedTitle: 'Есть несохраненные изменения',
     saving: 'Сохранение…',

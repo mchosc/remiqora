@@ -13,6 +13,7 @@ const actions = vi.hoisted(() => {
   return { submit: vi.fn(), submitVoiceReplacement: vi.fn(), inventory, inventoryLoading: false, inventoryError: '', loadInventory: vi.fn(), pendingParamsInsert: null, clearPendingParamsInsert: vi.fn(), loadHistory: vi.fn(), startBackgroundTasks: vi.fn(), stopBackgroundTasks: vi.fn() }
 })
 const engine = reactive<{ statuses: { ace_step?: { status: 'running' | 'stopped'; error: null } } }>({ statuses: {} })
+vi.mock('../../api/trackActivity', () => ({ listActiveAudioTrackIds: vi.fn().mockResolvedValue([]) }))
 vi.mock('../../stores/aceStep', () => ({ useAceStepStore: () => actions }))
 vi.mock('../../stores/orchestrator', () => ({ useOrchestratorStore: () => engine }))
 vi.mock('../../api/voices', async (original) => ({ ...await original<typeof import('../../api/voices')>(), listVoices: vi.fn() }))

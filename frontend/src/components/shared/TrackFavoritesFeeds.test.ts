@@ -11,6 +11,7 @@ import * as api from '../../api/tracks'
 import { parseSavedTrack } from '../../api/contracts'
 import { i18n, setLocale } from '../../i18n'
 
+vi.mock('../../api/trackActivity', () => ({ listActiveAudioTrackIds: vi.fn().mockResolvedValue([]) }))
 vi.mock('../../api/tracks', async (original) => ({ ...await original<typeof import('../../api/tracks')>(), listTracks: vi.fn(), setTrackFavorite: vi.fn() }))
 vi.mock('./TrackAudioVersions.vue', () => ({ default: { props: ['trackId', 'fallbackAudioUrl'], template: '<div data-player :data-track="trackId" :data-fallback="fallbackAudioUrl"></div>' } }))
 vi.mock('./BatchABPlayer.vue', () => ({ default: { template: '<div data-batch-player></div>' } }))
@@ -19,7 +20,7 @@ vi.mock('./StemsPanel.vue', () => ({ default: { props: ['trackId'], template: '<
 vi.mock('./MidiPanel.vue', () => ({ default: { props: ['trackId'], template: '<div data-midi :data-track="trackId"></div>' } }))
 function track(id: number, favorite: boolean) { return parseSavedTrack({ id, short_id: id + 100, model: 'ace_step', title: `Song ${id}`, filename: `${id}.wav`, created_at: '2026-10-01T10:00:00Z', lyrics: '', seed: null, duration_ms: null, wall_ms: null, params: {}, audio_url: `/api/tracks/${id}/audio`, abc_url: null, stems: null, midi: null, is_favorite: favorite }) }
 const ace: AceJob = { id: 'batch', status: 'done', createdAt: new Date('2026-10-01T10:00:00Z').getTime(), title: 'Batch song', lyrics: '', audioFormat: 'wav', batchSize: 2, progress: 100, finalized: true, dbIds: [1, 2], shortIds: [101, 102], audioUrls: ['/first.wav', '/second.wav'] }
-function yue(id: number, createdAt: string): Yue2Job { return { id: `saved_${id}`, dbId: id, shortId: id + 100, status: 'done', createdAt: new Date(createdAt).getTime(), style: `Song ${id}`, lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, audioUrl: `/${id}.wav` } }
+function yue(id: number, createdAt: string): Yue2Job { return { id: `saved_${id}`, dbId: id, shortId: id + 100, status: 'done', createdAt: new Date(createdAt).getTime(), title: `Song ${id}`, style: `Song ${id}`, lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, audioUrl: `/${id}.wav` } }
 let app: App | undefined
 beforeEach(() => {
   setLocale('en'); vi.clearAllMocks(); useTrackView().setView('cards')

@@ -6,12 +6,14 @@ import { useOrchestratorStore } from '../../stores/orchestrator'
 import { MODEL_LABELS, MODEL_ROUTES, useModelSwitch } from '../../composables/useModelSwitch'
 import { setLocale, currentLocale, type LocaleCode } from '../../i18n'
 import type { ModelId, ModelRuntimeStatus } from '../../types'
+import HelpModal from './HelpModal.vue'
 
 const orchestrator = useOrchestratorStore()
 const route = useRoute()
 const { selectModel } = useModelSwitch()
 const { t } = useI18n()
 const headerElement = ref<HTMLElement | null>(null)
+const helpOpen = ref(false)
 let headerObserver: ResizeObserver | undefined
 function measureHeader() {
   const element = headerElement.value
@@ -84,6 +86,7 @@ async function onSelect(id: ModelId) {
       </router-link>
 
       <nav class="ml-auto flex flex-wrap gap-2">
+        <button type="button" class="rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-text-dim hover:text-text focus-visible:outline-2 focus-visible:outline-accent1" @click="helpOpen = true">{{ t('common.help') }}</button>
         <router-link
           to="/settings"
           class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors"
@@ -146,4 +149,13 @@ async function onSelect(id: ModelId) {
       {{ orchestrator.switchError }}
     </p>
   </header>
+  <Teleport to="body">
+    <HelpModal :open="helpOpen" :title="t('upstreamWorkspace.helpTitle')" @close="helpOpen = false">
+      <p>{{ t('upstreamWorkspace.helpGeneration') }}</p>
+      <p>{{ t('upstreamWorkspace.helpVersions') }}</p>
+      <p>{{ t('upstreamWorkspace.helpVoice') }}</p>
+      <p>{{ t('upstreamWorkspace.helpVideo') }}</p>
+      <p>{{ t('upstreamWorkspace.helpSettings') }}</p>
+    </HelpModal>
+  </Teleport>
 </template>

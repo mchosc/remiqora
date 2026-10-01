@@ -29,7 +29,7 @@ from .api.routes_yue2_upload import router as yue2_upload_router
 from .config import DATA_DIR, FRONTEND_DIST_DIR, LOG_DIR, SEED_VC_DIR, _LEGACY_LOG_DIR
 from .data_root import ensure_layout, place_seed_models
 from .orchestrator.manager import manager
-from . import ace_jobs, audio_exports, audio_versions, midi, stems, video_jobs, voice_build, voice_comparisons
+from . import ace_jobs, audio_exports, audio_versions, midi, stems, tagging, video_jobs, voice_build, voice_comparisons
 
 
 @asynccontextmanager
@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
             try:
                 outcomes = await asyncio.gather(
                     voice_build.shutdown(), audio_exports.shutdown_exports(), voice_comparisons.shutdown(), video_jobs.shutdown(),
-                    stems.shutdown(), midi.shutdown(), return_exceptions=True,
+                    stems.shutdown(), midi.shutdown(), tagging.shutdown(), return_exceptions=True,
                 )
                 for outcome in outcomes:
                     if isinstance(outcome, BaseException):

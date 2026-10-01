@@ -8,12 +8,14 @@ import PauseIcon from './icons/PauseIcon.vue'
 const { t } = useI18n()
 
 const props = defineProps<{ src: string; compact?: boolean }>()
+const emit = defineEmits<{ playing: [value: boolean] }>()
 
 const BAR_COUNT = 140
 
 const audioEl = ref<HTMLAudioElement | null>(null)
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const playing = ref(false)
+watch(playing, value => emit('playing', value), { flush: 'sync' })
 const duration = ref(0)
 const currentTime = ref(0)
 const peaks = ref<number[]>([])
@@ -235,6 +237,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  playing.value = false
   mounted = false
   generation++
   intersectionObserver?.disconnect()

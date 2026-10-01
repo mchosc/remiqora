@@ -29,7 +29,11 @@ beforeEach(() => {
       flac: { ...response.settings.flac, ...settings.flac },
     } }
   })
-  vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ data_dir: '/test/library', pending_data_dir: '', restart_required: false, error: '', can_pick: false, folders: [] }))))
+  vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async input => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const data = url === '/api/tracks' ? { data: [] } : url === '/api/settings' ? { artist: '' } : { data_dir: '/test/library', pending_data_dir: '', restart_required: false, error: '', can_pick: false, folders: [] }
+    return new Response(JSON.stringify(data))
+  }))
 })
 afterEach(() => { app?.unmount(); app = undefined; document.body.replaceChildren(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals() })
 async function settle() { for (let index = 0; index < 6; index++) await nextTick() }
@@ -162,7 +166,7 @@ it('moves the existing library migration workflow from Home into Settings', asyn
   const settings = await mount()
   expect(settings.textContent).toContain(i18n.global.t('dataFolder.title'))
   await settle()
-  const folder = settings.querySelector('input[type=text]')
+  const folder = settings.querySelector('input[spellcheck=false]')
   if (!(folder instanceof HTMLInputElement)) throw new Error('Missing library folder field')
   expect(folder.value).toBe('/test/library'); expect(folder.getAttribute('spellcheck')).toBe('false')
 })
@@ -182,4 +186,14 @@ it('registers a lazy Settings route and highlights its translated header link', 
   const container = await mount(AppHeader, '/settings')
   const link = [...container.querySelectorAll('a')].find((node) => node.textContent?.trim() === 'Settings')
   expect(link?.getAttribute('href')).toBe('/settings'); expect(link?.getAttribute('aria-current')).toBe('page'); expect(link?.classList.contains('border-accent1/60')).toBe(true)
+})
+
+it('opens global help while preserving all fork navigation routes', async () => {
+  const header = await mount(AppHeader, '/settings')
+  for (const path of ['/settings', '/editor', '/voice-clone', '/video']) expect(header.querySelector(`a[href="${path}"]`)).not.toBeNull()
+  const help = button(header, 'Help'); help.focus(); help.click(); await settle()
+  const dialog = document.querySelector('[role="dialog"][aria-label="Using Remiqora"]')
+  expect(dialog?.textContent).toContain('separate voice versions'); expect(dialog?.textContent).toContain('Video Studio')
+  dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await settle()
+  expect(document.querySelector('[aria-label="Using Remiqora"]')).toBeNull(); expect(document.activeElement).toBe(help)
 })

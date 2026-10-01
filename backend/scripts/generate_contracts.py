@@ -8,13 +8,16 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.contracts import CLIENT_MODELS, JsonObject, JsonValue
 from app.client_contracts import EXTRA_CLIENT_MODELS
+from app.artist_settings import ArtistSettings
+from app.tagging import TaggedDownloadOptions
+from app.track_activity import TrackActivityResponse
 
-ALL_MODELS = [*CLIENT_MODELS, *EXTRA_CLIENT_MODELS]
+ALL_MODELS: list[type[BaseModel]] = [*CLIENT_MODELS, *EXTRA_CLIENT_MODELS, ArtistSettings, TaggedDownloadOptions, TrackActivityResponse]
 
 DEST = Path(__file__).resolve().parents[2] / 'frontend/src/api/generated.ts'
 SUPPORTED = {'$defs', '$ref', 'title', 'description', 'default', 'type', 'anyOf', 'enum', 'const', 'properties', 'required', 'additionalProperties', 'items', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern'}

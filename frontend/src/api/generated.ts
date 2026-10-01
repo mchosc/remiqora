@@ -67,6 +67,10 @@ export type ApproveVideoVariantRequest = {
   "variant_id": string
 }
 
+export type ArtistSettings = {
+  "artist": string
+}
+
 export type AudioEncodingSettings = {
   "mp3"?: Mp3EncodingSettings
   "wav"?: WavEncodingSettings
@@ -328,6 +332,15 @@ export type StemsStatusResponse = {
 
 export type SwitchRequest = {
   "model": string
+}
+
+export type TaggedDownloadOptions = {
+  "album"?: (string | null)
+  "track_no"?: (number | null)
+}
+
+export type TrackActivityResponse = {
+  "track_ids": Array<number>
 }
 
 export type TrackAudioVersionsResponse = {
@@ -6024,6 +6037,75 @@ const schemas = {
     ],
     "title": "LibraryPickResponse",
     "type": "object"
+  },
+  "ArtistSettings": {
+    "additionalProperties": false,
+    "properties": {
+      "artist": {
+        "maxLength": 120,
+        "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]*$",
+        "title": "Artist",
+        "type": "string"
+      }
+    },
+    "required": [
+      "artist"
+    ],
+    "title": "ArtistSettings",
+    "type": "object"
+  },
+  "TaggedDownloadOptions": {
+    "additionalProperties": false,
+    "properties": {
+      "album": {
+        "anyOf": [
+          {
+            "maxLength": 120,
+            "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Album"
+      },
+      "track_no": {
+        "anyOf": [
+          {
+            "maximum": 999,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Track No"
+      }
+    },
+    "title": "TaggedDownloadOptions",
+    "type": "object"
+  },
+  "TrackActivityResponse": {
+    "properties": {
+      "track_ids": {
+        "items": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "title": "Track Ids",
+        "type": "array"
+      }
+    },
+    "required": [
+      "track_ids"
+    ],
+    "title": "TrackActivityResponse",
+    "type": "object"
   }
 } as const
 
@@ -6636,5 +6718,29 @@ function isLibraryPickResponse(value: unknown): value is LibraryPickResponse {
 }
 export function parseLibraryPickResponse(value: unknown): LibraryPickResponse {
   if (!isLibraryPickResponse(value)) throw new TypeError("Invalid LibraryPickResponse response")
+  return value
+}
+
+function isArtistSettings(value: unknown): value is ArtistSettings {
+  return decodeSchema(schemas.ArtistSettings, value, schemas)
+}
+export function parseArtistSettings(value: unknown): ArtistSettings {
+  if (!isArtistSettings(value)) throw new TypeError("Invalid ArtistSettings response")
+  return value
+}
+
+function isTaggedDownloadOptions(value: unknown): value is TaggedDownloadOptions {
+  return decodeSchema(schemas.TaggedDownloadOptions, value, schemas)
+}
+export function parseTaggedDownloadOptions(value: unknown): TaggedDownloadOptions {
+  if (!isTaggedDownloadOptions(value)) throw new TypeError("Invalid TaggedDownloadOptions response")
+  return value
+}
+
+function isTrackActivityResponse(value: unknown): value is TrackActivityResponse {
+  return decodeSchema(schemas.TrackActivityResponse, value, schemas)
+}
+export function parseTrackActivityResponse(value: unknown): TrackActivityResponse {
+  if (!isTrackActivityResponse(value)) throw new TypeError("Invalid TrackActivityResponse response")
   return value
 }

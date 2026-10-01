@@ -10,7 +10,9 @@ import { createPollingLoop } from '../../composables/polling'
 import WaveformPlayer from './WaveformPlayer.vue'
 import StatusBadge from './StatusBadge.vue'
 import VoiceApplyStatus from './VoiceApplyStatus.vue'
+import TaggedAudioDownload from './TaggedAudioDownload.vue'
 const props = defineProps<{ trackId: number; fallbackAudioUrl?: string | null; fallbackFilename?: string | null; voiceApplying?: boolean }>()
+const emit = defineEmits<{ playing: [value: boolean]; processing: [value: boolean] }>()
 const { t, te } = useI18n()
 const versions = ref<AudioVersion[]>([])
 const exports = ref<AudioExportResponse[]>([])
@@ -19,6 +21,12 @@ const voicesUnavailable = ref(false)
 const selectedId = ref('')
 const playback = ref<{ version: AudioVersion; export: AudioExportResponse | null } | null>(null)
 const player = ref<InstanceType<typeof WaveformPlayer> | null>(null)
+const playerPlaying = ref(false)
+const playbackStarting = ref(false)
+// Changing src pauses the existing media before the explicitly selected file
+// can start. Keep its card owned through that transition, then use real media
+// state again when the request starts, fails, or is cancelled.
+watch(() => playerPlaying.value || playbackStarting.value, value => emit('playing', value), { flush: 'sync' })
 const voiceId = ref('')
 const format = ref<AudioExportFormat>('mp3')
 const originalAvailable = ref(false)
@@ -39,6 +47,7 @@ const playbackFormat = computed(() => playback.value?.export?.format.toUpperCase
 const playbackLabel = computed(() => [playback.value ? label(playback.value.version) : '', playbackFormat.value].filter(Boolean).join(' · '))
 const readyVoices = computed(() => voices.value.filter(item => item.usable))
 const active = (status: string) => status === 'queued' || status === 'running'
+watch(() => versions.value.some(version => active(version.status)) || exports.value.some(item => active(item.status)), value => emit('processing', value), { immediate: true })
 const visibleVoiceJobs = computed(() => versions.value.filter(item => item.kind === 'voice' && (active(item.status) || item.id === selectedId.value && item.job_progress)))
 function label(version: AudioVersion) { return version.kind === 'original' ? t('trackAudio.original') : version.voice_name || t('trackAudio.unknownVoice') }
 function statusLabel(version: AudioVersion): string {
@@ -72,11 +81,20 @@ function reconcilePlayback(): void {
 async function playFile(version: AudioVersion, exported: AudioExportResponse | null = null): Promise<void> {
   if (disposed || pending.value || version.status !== 'done' || !version.audio_url || (exported && (exported.status !== 'done' || !exported.audio_url || exported.version_id !== version.id))) return
   const token = session, request = ++playbackRequest
+  playbackStarting.value = true
   playback.value = { version, export: exported }
   const url = playable.value
-  await nextTick()
-  if (disposed || token !== session || request !== playbackRequest || playable.value !== url) return
-  await player.value?.play()
+  try {
+    await nextTick()
+    if (disposed || token !== session || request !== playbackRequest || playable.value !== url) return
+    await player.value?.play()
+  } finally {
+    if (!disposed && token === session && request === playbackRequest) playbackStarting.value = false
+  }
+}
+function notePlaying(value: boolean): void {
+  playerPlaying.value = value
+  if (value) playbackStarting.value = false
 }
 function errorText(cause: unknown) {
   const code = cause instanceof ApiError ? cause.message : ''
@@ -139,7 +157,10 @@ function refresh() {
 }
 function choose(version: AudioVersion) {
   if (pending.value || disposed) return
-  playbackRequest++
+  if (version.status !== 'done' || !version.audio_url) {
+    playbackRequest++
+    playbackStarting.value = false
+  }
   if (version.id !== selectedId.value) {
     selectedId.value = version.id
     exports.value = []
@@ -216,6 +237,8 @@ function quality(item: AudioExportResponse) {
 watch(() => props.trackId, () => {
   session++
   playbackRequest++
+  playerPlaying.value = false
+  playbackStarting.value = false
   poll.stop()
   actionController?.abort()
   pending.value = false
@@ -228,7 +251,7 @@ watch(() => props.trackId, () => {
   refresh()
 }, { immediate: true })
 watch(() => props.voiceApplying, () => { if (!pending.value) { poll.stop(); poll.start() } })
-onBeforeUnmount(() => { disposed = true; session++; playbackRequest++; poll.stop(); actionController?.abort() })
+onBeforeUnmount(() => { disposed = true; session++; playbackRequest++; playerPlaying.value = false; playbackStarting.value = false; poll.stop(); actionController?.abort(); emit('playing', false); emit('processing', false) })
 </script>
 
 <template>
@@ -253,8 +276,9 @@ onBeforeUnmount(() => { disposed = true; session++; playbackRequest++; poll.stop
       <button v-for="item in readyExports" :key="item.id" type="button" :aria-pressed="playback?.export?.id === item.id" :disabled="pending" class="rounded-lg border border-border px-3 py-1 text-xs disabled:opacity-50" :class="playback?.export?.id === item.id ? 'bg-accent/20 text-accent1' : 'bg-panel-2 text-text-dim'" @click="playFile(selected, item)">{{ quality(item) }}</button>
     </div>
     <p v-if="playable" class="text-xs text-text-dim">{{ t('trackAudio.selectedAudio', { selection: playbackLabel }) }}</p>
-    <WaveformPlayer v-if="playable" ref="player" :src="playable" />
+    <WaveformPlayer v-if="playable" ref="player" :src="playable" @playing="notePlaying" />
     <a v-if="playable" :href="playable" :download="playbackFilename ?? ''" class="inline-block text-xs text-accent1 hover:underline">{{ t('trackAudio.downloadSelected', { format: playbackFormat }) }}</a>
+    <TaggedAudioDownload v-if="playback" class="ml-3" :track-id="trackId" :version-id="playback.version.id" :export-id="playback.export?.id" />
     <div v-if="selected && selected.status !== 'done' && !active(selected.status)" class="flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
       <StatusBadge :status="selected.status" />
       <span v-if="selected.error_code" class="text-status-failed">{{ te(`trackAudio.errors.${selected.error_code}`) ? t(`trackAudio.errors.${selected.error_code}`) : t('trackAudio.errors.unknown') }}</span>

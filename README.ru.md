@@ -23,6 +23,9 @@
 
 Настройка видео, сохранённые проекты, CPU-проверки и ограничения моделей: [руководство Video Studio](docs/video-studio.md).
 
+Адаптированные изменения upstream, сохранённые функции форка и границы проверок:
+[заметки об интеграции за октябрь 2026 года](docs/upstream-integration-2026-10-01.md).
+
 <p align="center">
   <img alt="Статус" src="https://img.shields.io/badge/статус-в%20разработке-eab308?style=flat-square">
   <a href="LICENSE.ru.md"><img alt="Лицензия" src="https://img.shields.io/badge/лицензия-MIT-22c55e?style=flat-square"></a>

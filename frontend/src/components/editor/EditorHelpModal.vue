@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { onMounted, onUnmounted } from 'vue'
+import { ref } from 'vue'
+import { useDialogA11y } from '../../composables/useDialogA11y'
 
 const props = defineProps<{
   show: boolean
@@ -12,19 +13,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show) {
-    emit('close')
-  }
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', onKeydown)
-})
+const dialog = ref<HTMLElement | null>(null)
+useDialogA11y(dialog, () => props.show, () => emit('close'))
 </script>
 
 <template>
@@ -35,7 +25,7 @@ onUnmounted(() => {
         class="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm bg-black/40"
         @click.self="emit('close')"
       >
-        <div class="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-border/60 bg-panel-2/95 shadow-2xl backdrop-blur-xl">
+        <div ref="dialog" role="dialog" aria-modal="true" :aria-label="t('editor.help.title')" tabindex="-1" class="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-border/60 bg-panel-2/95 shadow-2xl backdrop-blur-xl">
           <!-- Header -->
           <div class="flex items-center justify-between border-b border-border/40 bg-panel/50 px-6 py-4">
             <h2 class="text-xl font-bold bg-gradient-to-r from-accent1 to-accent2 bg-clip-text text-transparent">

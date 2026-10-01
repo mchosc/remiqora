@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { stretchFactor } from '../../audio/timelineTypes'
 import type { Clip } from '../../audio/timelineTypes'
+import { hasOpenDialog } from '../../composables/useDialogA11y'
 
 const MIN_CLIP_SEC = 0.05
 const SNAP_PX = 8
@@ -10,6 +11,8 @@ const props = defineProps<{
   clip: Clip
   pxPerSecond: number
   buffer: AudioBuffer | null
+  /** Original source duration; buffer may still be waiting for its warped replacement. */
+  sourceDuration?: number
   snapCandidates: number[]
   gridStepSec: number
   snapEnabled: boolean
@@ -51,6 +54,37 @@ const canvasEl = ref<HTMLCanvasElement | null>(null)
 const duration = computed(() => (props.clip.trimEnd - props.clip.trimStart) * effectiveStretchFactor.value)
 const left = computed(() => props.clip.timelineStart * props.pxPerSecond)
 const width = computed(() => Math.max(4, duration.value * props.pxPerSecond))
+const minimumSourceLength = computed(() => MIN_CLIP_SEC / effectiveStretchFactor.value)
+const sourceEnd = computed(() => props.sourceDuration ?? (props.buffer
+  ? props.buffer.duration / effectiveStretchFactor.value
+  : (props.clip.notes ?? []).reduce((end, note) => Math.max(end, note.startSec + note.durationSec), props.clip.trimEnd)))
+const canTrimEnd = computed(() => sourceEnd.value > props.clip.trimStart)
+const startTrimBounds = computed(() => leftTrimBounds(props.clip.trimStart, props.clip.trimEnd, props.clip.timelineStart))
+const endTrimMinimum = computed(() => canTrimEnd.value ? Math.min(sourceEnd.value, props.clip.trimStart + minimumSourceLength.value) : props.clip.trimEnd)
+const startTrimMinTimeline = computed(() => Math.max(0, props.clip.timelineStart + (startTrimBounds.value.min - props.clip.trimStart) * effectiveStretchFactor.value))
+const startTrimMaxTimeline = computed(() => props.clip.timelineStart + (startTrimBounds.value.max - props.clip.trimStart) * effectiveStretchFactor.value)
+const endTrimMinTimeline = computed(() => props.clip.timelineStart + (endTrimMinimum.value - props.clip.trimStart) * effectiveStretchFactor.value)
+const endTrimMaxTimeline = computed(() => props.clip.timelineStart + ((canTrimEnd.value ? sourceEnd.value : props.clip.trimEnd) - props.clip.trimStart) * effectiveStretchFactor.value)
+const endTrimValue = computed(() => Math.max(endTrimMinTimeline.value, Math.min(props.clip.timelineStart + duration.value, endTrimMaxTimeline.value)))
+const fadeInValue = computed(() => Math.max(0, Math.min(props.clip.fadeInDuration ?? 0, duration.value)))
+const fadeOutValue = computed(() => Math.max(0, Math.min(props.clip.fadeOutDuration ?? 0, duration.value)))
+
+function leftTrimBounds(trimStart: number, trimEnd: number, timelineStart: number): { min: number; max: number } {
+  const min = Math.max(0, trimStart - timelineStart / effectiveStretchFactor.value)
+  return { min, max: Math.max(min, trimEnd - minimumSourceLength.value) }
+}
+
+function boundedLeftTrim(value: number, trimStart = props.clip.trimStart, trimEnd = props.clip.trimEnd, timelineStart = props.clip.timelineStart) {
+  const bounds = leftTrimBounds(trimStart, trimEnd, timelineStart)
+  const nextStart = Math.max(bounds.min, Math.min(value, bounds.max))
+  return { trimStart: nextStart, trimEnd, timelineStart: Math.max(0, timelineStart + (nextStart - trimStart) * effectiveStretchFactor.value) }
+}
+
+function boundedRightTrim(value: number, trimStart = props.clip.trimStart, timelineStart = props.clip.timelineStart) {
+  if (sourceEnd.value <= trimStart) return { trimStart, trimEnd: props.clip.trimEnd, timelineStart }
+  const minimum = Math.min(sourceEnd.value, trimStart + minimumSourceLength.value)
+  return { trimStart, trimEnd: Math.max(minimum, Math.min(value, sourceEnd.value)), timelineStart }
+}
 
 type DragMode = 'move' | 'trim-left' | 'trim-right' | 'fade-left' | 'fade-right'
 let dragMode: DragMode | null = null
@@ -104,19 +138,19 @@ function snap(value: number): number {
 /** Arrow keys on the focused clip: move it (grid step with Magnet on, else
  * 0.1 s; Alt for 0.01 s), or with Shift move its end. Each press is one undo step. */
 function onKeydown(e: KeyboardEvent): void {
+  if (hasOpenDialog()) return
   if (e.target !== e.currentTarget) return
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
   if (e.ctrlKey || e.metaKey) return
   e.preventDefault()
   e.stopPropagation()
+  if (e.shiftKey && !canTrimEnd.value) return
   const dir = e.key === 'ArrowLeft' ? -1 : 1
   const grid = props.snapEnabled && props.gridStepSec > 0 && !e.altKey
   const step = e.altKey ? 0.01 : grid ? props.gridStepSec : 0.1
   if (e.shiftKey) {
     const sf = effectiveStretchFactor.value
-    const maxEnd = props.buffer ? props.buffer.duration / sf : Infinity
-    const trimEnd = Math.max(props.clip.trimStart + MIN_CLIP_SEC, Math.min(props.clip.trimEnd + (dir * step) / sf, maxEnd))
-    emit('trim', { trimStart: props.clip.trimStart, trimEnd, timelineStart: props.clip.timelineStart })
+    emit('trim', boundedRightTrim(props.clip.trimEnd + (dir * step) / sf))
   } else {
     let start = props.clip.timelineStart + dir * step
     if (grid) start = Math.round(start / props.gridStepSec) * props.gridStepSec
@@ -125,8 +159,34 @@ function onKeydown(e: KeyboardEvent): void {
   emit('dragEnd')
 }
 
+/** Values and limits are handle positions in timeline seconds, including the
+ * fade-out's inner edge, so arrows and Home/End agree with the slider values. */
+function onHandleKeydown(handle: Exclude<DragMode, 'move'>, event: KeyboardEvent): void {
+  if (hasOpenDialog() || event.ctrlKey || event.metaKey) return
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (handle === 'trim-right' && !canTrimEnd.value) return
+  const base = event.altKey ? 0.01 : props.snapEnabled && props.gridStepSec > 0 ? props.gridStepSec : 0.1
+  const delta = base * (event.shiftKey ? 4 : 1) * (event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 1)
+  const home = event.key === 'Home', end = event.key === 'End'
+  if (handle === 'trim-left') {
+    const value = home ? startTrimBounds.value.min : end ? startTrimBounds.value.max : props.clip.trimStart + delta / effectiveStretchFactor.value
+    emit('trim', boundedLeftTrim(value))
+  } else if (handle === 'trim-right') {
+    const value = home ? endTrimMinimum.value : end ? sourceEnd.value : props.clip.trimEnd + delta / effectiveStretchFactor.value
+    emit('trim', boundedRightTrim(value))
+  } else if (handle === 'fade-left') {
+    emit('fade', { fadeInDuration: home ? 0 : end ? duration.value : Math.max(0, Math.min(fadeInValue.value + delta, duration.value)), fadeOutDuration: fadeOutValue.value })
+  } else {
+    emit('fade', { fadeInDuration: fadeInValue.value, fadeOutDuration: home ? duration.value : end ? 0 : Math.max(0, Math.min(fadeOutValue.value - delta, duration.value)) })
+  }
+  emit('dragEnd')
+}
+
 function onPointerDown(mode: DragMode, evt: PointerEvent): void {
   evt.stopPropagation()
+  if (mode === 'trim-right' && !canTrimEnd.value) return
   emit('select')
   dragMode = mode
   dragStartClientX = evt.clientX
@@ -150,47 +210,14 @@ function onPointerMove(evt: PointerEvent): void {
     const raw = Math.max(0, dragStartTimelineStart + deltaSec)
     emit('move', snap(raw))
   } else if (dragMode === 'trim-left') {
-    const maxStart = dragStartTrimEnd - MIN_CLIP_SEC
-    // delta is in stretched time, we must scale it back to original time for trimStart
-    const originalDeltaSec = deltaSec / effectiveStretchFactor.value
-    const rawTrimStart = Math.max(0, Math.min(dragStartTrimStart + originalDeltaSec, maxStart))
-    
-    // timelineStart moves by the stretched amount
-    const stretchedDelta = (rawTrimStart - dragStartTrimStart) * effectiveStretchFactor.value
-    const rawTimelineStart = dragStartTimelineStart + stretchedDelta
-    const snappedTimelineStart = snap(rawTimelineStart)
-    const appliedStretchedDelta = snappedTimelineStart - dragStartTimelineStart
-    const appliedOriginalDelta = appliedStretchedDelta / effectiveStretchFactor.value
-
-    // Snapping can pull the edge earlier than the source start (or later than
-    // maxStart), so clamp again AFTER the snap and derive timelineStart from the
-    // clamped value. A negative trimStart would reach start() as a RangeError.
-    const trimStart = Math.max(0, Math.min(dragStartTrimStart + appliedOriginalDelta, maxStart))
-    emit('trim', {
-      trimStart,
-      trimEnd: dragStartTrimEnd,
-      timelineStart: dragStartTimelineStart + (trimStart - dragStartTrimStart) * effectiveStretchFactor.value,
-    })
+    const raw = boundedLeftTrim(dragStartTrimStart + deltaSec / effectiveStretchFactor.value, dragStartTrimStart, dragStartTrimEnd, dragStartTimelineStart)
+    const snappedStart = dragStartTrimStart + (snap(raw.timelineStart) - dragStartTimelineStart) / effectiveStretchFactor.value
+    emit('trim', boundedLeftTrim(snappedStart, dragStartTrimStart, dragStartTrimEnd, dragStartTimelineStart))
   } else if (dragMode === 'trim-right') {
-    const minEnd = dragStartTrimStart + MIN_CLIP_SEC
-    const maxEnd = props.buffer ? props.buffer.duration / effectiveStretchFactor.value : Infinity
-    const originalDeltaSec = deltaSec / effectiveStretchFactor.value
-    const rawTrimEnd = Math.max(minEnd, Math.min(dragStartTrimEnd + originalDeltaSec, maxEnd))
-    
-    const stretchedDelta = (rawTrimEnd - dragStartTrimStart) * effectiveStretchFactor.value
-    const rawEndOnTimeline = dragStartTimelineStart + stretchedDelta
-    const snappedEndOnTimeline = snap(rawEndOnTimeline)
-    
-    const appliedStretchedDelta = snappedEndOnTimeline - dragStartTimelineStart
-    const appliedOriginalDelta = appliedStretchedDelta / effectiveStretchFactor.value
-
-    // Clamp again after snapping: the snapped end must stay within the source
-    // and at least MIN_CLIP_SEC after trimStart.
-    emit('trim', {
-      trimStart: dragStartTrimStart,
-      trimEnd: Math.max(minEnd, Math.min(dragStartTrimStart + appliedOriginalDelta, maxEnd)),
-      timelineStart: dragStartTimelineStart,
-    })
+    const raw = boundedRightTrim(dragStartTrimEnd + deltaSec / effectiveStretchFactor.value, dragStartTrimStart, dragStartTimelineStart)
+    const rawEnd = dragStartTimelineStart + (raw.trimEnd - dragStartTrimStart) * effectiveStretchFactor.value
+    const snappedEnd = dragStartTrimStart + (snap(rawEnd) - dragStartTimelineStart) / effectiveStretchFactor.value
+    emit('trim', boundedRightTrim(snappedEnd, dragStartTrimStart, dragStartTimelineStart))
   } else if (dragMode === 'fade-left') {
     const rawFadeIn = Math.max(0, dragStartFadeIn + deltaSec)
     emit('fade', {
@@ -453,23 +480,40 @@ onBeforeUnmount(() => {
       <polygon :points="fadeOutPolygon" fill="black" />
     </svg>
 
-    <div class="absolute top-0 left-0 h-full w-2 cursor-ew-resize hover:bg-accent1/30 transition-colors" @pointerdown="onPointerDown('trim-left', $event)">
+    <div class="absolute top-0 left-0 h-full w-2 cursor-ew-resize hover:bg-accent1/30 focus-visible:bg-accent1/30 focus-visible:outline-2 focus-visible:outline-accent1 transition-colors"
+      role="slider" tabindex="0" aria-orientation="horizontal"
+      :aria-label="t('upstreamWorkspace.trimStart')" :title="t('upstreamWorkspace.handleHint')"
+      :aria-valuemin="startTrimMinTimeline" :aria-valuemax="startTrimMaxTimeline" :aria-valuenow="clip.timelineStart"
+      @focus="emit('select')" @keydown="onHandleKeydown('trim-left', $event)" @pointerdown="onPointerDown('trim-left', $event)">
       <div class="absolute left-0 top-1/2 h-4 w-1 -translate-y-1/2 rounded-r-sm bg-white/40 shadow-sm"></div>
     </div>
-    <div class="absolute top-0 right-0 h-full w-2 cursor-ew-resize hover:bg-accent1/30 transition-colors" @pointerdown="onPointerDown('trim-right', $event)">
+    <div class="absolute top-0 right-0 h-full w-2 cursor-ew-resize hover:bg-accent1/30 focus-visible:bg-accent1/30 focus-visible:outline-2 focus-visible:outline-accent1 transition-colors"
+      role="slider" tabindex="0" aria-orientation="horizontal"
+      :aria-label="t('upstreamWorkspace.trimEnd')" :title="t('upstreamWorkspace.handleHint')"
+      :aria-disabled="!canTrimEnd"
+      :aria-valuemin="endTrimMinTimeline" :aria-valuemax="endTrimMaxTimeline" :aria-valuenow="endTrimValue"
+      @focus="emit('select')" @keydown="onHandleKeydown('trim-right', $event)" @pointerdown="onPointerDown('trim-right', $event)">
       <div class="absolute right-0 top-1/2 h-4 w-1 -translate-y-1/2 rounded-l-sm bg-white/40 shadow-sm"></div>
     </div>
     
     <div
-      class="group absolute top-0 z-20 flex h-6 w-6 -translate-x-1/2 cursor-ew-resize items-start justify-center"
-      :style="{ left: (props.clip.fadeInDuration || 0) * props.pxPerSecond + 'px' }"
+      class="group absolute top-0 z-20 flex h-6 w-6 -translate-x-1/2 cursor-ew-resize items-start justify-center rounded focus-visible:outline-2 focus-visible:outline-accent1"
+      :style="{ left: fadeInValue * props.pxPerSecond + 'px' }"
+      role="slider" tabindex="0" aria-orientation="horizontal"
+      :aria-label="t('upstreamWorkspace.fadeIn')" :title="t('upstreamWorkspace.handleHint')"
+      :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="fadeInValue"
+      @focus="emit('select')" @keydown="onHandleKeydown('fade-left', $event)"
       @pointerdown="onPointerDown('fade-left', $event)"
     >
       <div class="mt-1 h-2.5 w-2.5 rounded-full bg-accent1 shadow-[0_0_8px_var(--color-accent1)] transition-all group-hover:scale-125 group-hover:bg-white"></div>
     </div>
     <div
-      class="group absolute top-0 z-20 flex h-6 w-6 translate-x-1/2 cursor-ew-resize items-start justify-center"
-      :style="{ right: (props.clip.fadeOutDuration || 0) * props.pxPerSecond + 'px' }"
+      class="group absolute top-0 z-20 flex h-6 w-6 translate-x-1/2 cursor-ew-resize items-start justify-center rounded focus-visible:outline-2 focus-visible:outline-accent1"
+      :style="{ right: fadeOutValue * props.pxPerSecond + 'px' }"
+      role="slider" tabindex="0" aria-orientation="horizontal"
+      :aria-label="t('upstreamWorkspace.fadeOut')" :title="t('upstreamWorkspace.handleHint')"
+      :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="duration - fadeOutValue"
+      @focus="emit('select')" @keydown="onHandleKeydown('fade-right', $event)"
       @pointerdown="onPointerDown('fade-right', $event)"
     >
       <div class="mt-1 h-2.5 w-2.5 rounded-full bg-accent1 shadow-[0_0_8px_var(--color-accent1)] transition-all group-hover:scale-125 group-hover:bg-white"></div>

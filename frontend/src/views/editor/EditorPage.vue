@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useEditorStore } from '../../stores/editor'
 import { useTimelineEngine } from '../../composables/useTimelineEngine'
+import { hasOpenDialog } from '../../composables/useDialogA11y'
 import { getSharedAudioCtx } from '../../composables/audioPlayback'
 import { decodeStem, defaultMasterSettings, defaultChannelSettings } from '../../audio/mixerEngine'
 import type { ChannelSettings } from '../../audio/mixerEngine'
@@ -47,7 +48,17 @@ let rafId: number | null = null
 let playStartCtxTime = 0
 let playStartOffset = 0
 let playbackGeneration = 0
-let graphLaneCount: number | null = null
+let passEndCtxTime: number | null = null
+/** Snapshot of the bounds the current audio passes were scheduled with. */
+let playbackLoop: { start: number; end: number } | null = null
+let playbackLoopKey = ''
+
+function activeLoop(sec: number): { start: number; end: number } | null {
+  const region = store.project.loopRegion
+  if (!region?.enabled || !Number.isFinite(region.start) || !Number.isFinite(region.end)
+    || region.start < 0 || region.end - region.start < 0.1 - 1e-9 || sec >= region.end) return null
+  return { start: region.start, end: region.end }
+}
 
 function stopTicking(): void {
   if (rafId != null) cancelAnimationFrame(rafId)
@@ -56,18 +67,35 @@ function stopTicking(): void {
   masterLevel.value = { peak: 0, clipping: false, peakL: 0, peakR: 0 }
 }
 function tick(): void {
+  if (!store.playing) return
   const ctx = getSharedAudioCtx()
-  const currentTime = ctx.currentTime - playStartCtxTime + playStartOffset
-  
   const prevSec = store.playheadSec
-  if (store.project.loopRegion?.enabled && currentTime >= store.project.loopRegion.end) {
-    seek(store.project.loopRegion.start)
-    followPlayhead(prevSec)
-    rafId = requestAnimationFrame(tick)
-    return
+  if (passEndCtxTime != null && playbackLoop && ctx.currentTime >= passEndCtxTime) {
+    const duration = playbackLoop.end - playbackLoop.start
+    if (ctx.currentTime >= passEndCtxTime + duration) {
+      // Animation frames missed the queued pass too. Restart; only one pass
+      // is scheduled ahead, so continuous hidden-tab playback is not guaranteed.
+      seek(playbackLoop.start)
+      return
+    }
+    playStartOffset = playbackLoop.start
+    playStartCtxTime = passEndCtxTime
+    passEndCtxTime += duration
+    try {
+      engine.queuePass(store.project, buffers.value, playbackLoop.start, playbackLoop.end, passEndCtxTime)
+    } catch (error) {
+      playbackFailed(error)
+      return
+    }
   }
 
-  store.playheadSec = Math.min(store.totalDuration, currentTime)
+  const currentTime = Math.max(playStartOffset, ctx.currentTime - playStartCtxTime + playStartOffset)
+  if (currentTime >= store.totalDuration && !playbackLoop) {
+    engine.stop()
+    onEnded()
+    return
+  }
+  store.playheadSec = currentTime
   followPlayhead(prevSec)
   laneLevels.value = store.project.lanes.map((_, i) => engine.getLaneLevel(i))
   masterLevel.value = engine.getMasterLevel()
@@ -86,28 +114,62 @@ function onEnded(): void {
 
 async function play(): Promise<void> {
   if (store.playing) return
-  const from = store.playheadSec >= store.totalDuration ? 0 : store.playheadSec
+  const from = store.playheadSec >= store.totalDuration && !activeLoop(store.playheadSec) ? 0 : store.playheadSec
   store.playing = true
   await resumePlayback(from)
 }
 
-async function resumePlayback(from: number): Promise<void> {
+async function resumePlayback(from: number, retryCancelledStart = true): Promise<void> {
   const generation = ++playbackGeneration
+  stopTicking()
+  store.playheadSec = from
   playStartOffset = from
-  playStartCtxTime = getSharedAudioCtx().currentTime
-  await engine.play(store.project, buffers.value, from, onEnded)
-  if (generation !== playbackGeneration || !store.playing) return
-  startTicking()
+  playStartCtxTime = Infinity
+  passEndCtxTime = null
+  playbackLoop = null
+  playbackLoopKey = loopKey()
+  const loop = activeLoop(from)
+  try {
+    const startAt = await engine.play(store.project, buffers.value, from, loop?.end)
+    if (generation !== playbackGeneration || !store.playing) return
+    if (startAt == null) {
+      // Undo can replace the project/lane identities while activation awaits.
+      // Retry the current project once; repeated cancellation must leave the
+      // transport paused instead of claiming playback without a running clock.
+      if (retryCancelledStart) await resumePlayback(store.playheadSec, false)
+      else pause()
+      return
+    }
+    playStartCtxTime = startAt
+    playbackLoop = loop
+    if (loop) {
+      passEndCtxTime = startAt + loop.end - from
+      engine.queuePass(store.project, buffers.value, loop.start, loop.end, passEndCtxTime)
+    }
+    startTicking()
+  } catch (error) {
+    if (generation === playbackGeneration && store.playing) playbackFailed(error)
+  }
+}
+
+function playbackFailed(error: unknown): void {
+  console.error('editor: audio playback failed', error)
+  pause()
+  store.error = t('editor.playbackFailed')
 }
 
 function pause(): void {
   playbackGeneration++
   engine.stop()
+  passEndCtxTime = null
+  playbackLoop = null
   store.playing = false
   stopTicking()
 }
 
 function seek(value: number): void {
+  if (!Number.isFinite(value)) return
+  value = Math.max(0, value)
   store.playheadSec = value
   if (store.playing) {
     void resumePlayback(value)
@@ -117,11 +179,22 @@ function seek(value: number): void {
 let loopDragMode: 'start' | 'end' | 'move' | null = null
 let loopDragStartX = 0
 let loopDragStartVal = 0
+let loopDragStartKey = ''
+
+function loopKey(): string {
+  const loop = store.project.loopRegion
+  return loop ? `${loop.enabled}:${loop.start}:${loop.end}` : ''
+}
+
+watch(loopKey, () => {
+  if (store.playing && !loopDragMode && loopKey() !== playbackLoopKey) seek(store.playheadSec)
+})
 
 function onLoopPointerDown(mode: 'start' | 'end' | 'move', evt: PointerEvent) {
   evt.stopPropagation()
   if (!store.project.loopRegion) return
   loopDragMode = mode
+  loopDragStartKey = loopKey()
   loopDragStartX = evt.clientX
   if (mode === 'start') loopDragStartVal = store.project.loopRegion.start
   if (mode === 'end') loopDragStartVal = store.project.loopRegion.end
@@ -152,6 +225,27 @@ function onLoopPointerUp() {
   loopDragMode = null
   window.removeEventListener('pointermove', onLoopPointerMove)
   window.removeEventListener('pointerup', onLoopPointerUp)
+  if (store.playing && loopKey() !== loopDragStartKey) seek(store.playheadSec)
+  store.snapshot()
+}
+
+function onLoopKeydown(edge: 'start' | 'end', event: KeyboardEvent): void {
+  if (hasOpenDialog() || event.ctrlKey || event.metaKey) return
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+  const loop = store.project.loopRegion
+  if (!loop) return
+  event.preventDefault()
+  event.stopPropagation()
+  const min = edge === 'start' ? 0 : loop.start + 0.1
+  const max = edge === 'start' ? loop.end - 0.1 : Math.max(store.totalDuration, loop.end, min)
+  const grid = store.project.snapEnabled && !event.altKey
+  const base = event.altKey ? 0.01 : grid ? gridStepSec.value : 0.1
+  const direction = event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 1
+  let value = event.key === 'Home' ? min : event.key === 'End' ? max
+    : (edge === 'start' ? loop.start : loop.end) + direction * base * (event.shiftKey ? 4 : 1)
+  if (grid && event.key !== 'Home' && event.key !== 'End') value = Math.round(value / gridStepSec.value) * gridStepSec.value
+  if (edge === 'start') store.setLoopRegion(Math.max(min, Math.min(value, max)), loop.end)
+  else store.setLoopRegion(loop.start, Math.max(min, value))
   store.snapshot()
 }
 
@@ -376,8 +470,7 @@ async function load(): Promise<void> {
     const decoded = await engine.decodeAll(store.project)
     if (token !== loadToken) return
     buffers.value = decoded
-    engine.ensureGraph(store.project.lanes.length)
-    graphLaneCount = store.project.lanes.length
+    engine.ensureGraph(store.project.lanes.map((lane) => lane.id))
     engine.applySettings(store.project)
   } catch (e) {
     if (token === loadToken) store.error = e instanceof Error ? e.message : String(e)
@@ -481,11 +574,8 @@ watch(
     const currentLoad = loadToken
     const project = store.project
     const targetBuffers = buffers.value
-    const countChanged = graphLaneCount !== null && graphLaneCount !== project.lanes.length
-    graphLaneCount = project.lanes.length
-    engine.ensureGraph(project.lanes.length)
+    engine.ensureGraph(project.lanes.map((lane) => lane.id))
     engine.applySettings(project)
-    if (countChanged && store.playing) void resumePlayback(store.playheadSec)
     
     for (const lane of project.lanes) {
       for (const clip of lane.clips) {
@@ -525,6 +615,7 @@ watch(
 )
 
 function onKeydown(e: KeyboardEvent) {
+  if (hasOpenDialog() || e.defaultPrevented) return
   // Ctrl+S saves the project (also from the name field) instead of opening
   // the browser's Save Page dialog.
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyS') {
@@ -775,6 +866,9 @@ onBeforeUnmount(() => {
   engine.teardown()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('beforeunload', onBeforeUnload)
+  loopDragMode = null
+  window.removeEventListener('pointermove', onLoopPointerMove)
+  window.removeEventListener('pointerup', onLoopPointerUp)
 })
 
 onBeforeRouteLeave(() => {
@@ -927,7 +1021,7 @@ onBeforeRouteLeave(() => {
           <div class="flex flex-col gap-1.5 w-28" :title="t('editor.masterLevels')" role="img" :aria-label="t('editor.masterLevels')">
             <!-- Left Channel -->
             <div class="flex items-center gap-1.5">
-              <span class="text-[9px] font-bold text-text-dim w-2 text-right">L</span>
+              <span class="text-[11px] font-bold text-text-dim w-2 text-right">L</span>
               <div class="flex-1 h-1.5 rounded-full overflow-hidden bg-panel-2 shadow-inner relative border border-border/50">
                 <div 
                   class="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-accent1 to-accent2 transition-all duration-75 shadow-[0_0_8px_var(--color-accent1)]"
@@ -937,7 +1031,7 @@ onBeforeRouteLeave(() => {
             </div>
             <!-- Right Channel -->
             <div class="flex items-center gap-1.5">
-              <span class="text-[9px] font-bold text-text-dim w-2 text-right">R</span>
+              <span class="text-[11px] font-bold text-text-dim w-2 text-right">R</span>
               <div class="flex-1 h-1.5 rounded-full overflow-hidden bg-panel-2 shadow-inner relative border border-border/50">
                 <div 
                   class="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-accent1 to-accent2 transition-all duration-75 shadow-[0_0_8px_var(--color-accent1)]"
@@ -970,14 +1064,16 @@ onBeforeRouteLeave(() => {
                 <button
                   v-for="c in TRACK_COLORS"
                   :key="c.id"
-                  class="w-2.5 h-2.5 rounded-full transition-all focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-offset-panel-2 hover:scale-125"
+                  class="w-2.5 h-2.5 rounded-full transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white hover:scale-125"
                   :class="selectedLane.colorId === c.id ? 'scale-125 ring-1 ring-white shadow-sm' : 'opacity-60 hover:opacity-100'"
                   :style="{ backgroundColor: c.baseHex, boxShadow: selectedLane.colorId === c.id ? `0 0 6px ${c.baseHex}80` : '' }"
                   :title="c.name"
+                  :aria-label="c.name"
+                  :aria-pressed="selectedLane.colorId === c.id"
                   @click="store.updateLaneColor(selectedLane!.id, c.id)"
                 ></button>
               </template>
-              <div v-else class="text-[9px] text-text-dim/70">{{ t('editor.selectTrackToPickColor') }}</div>
+              <div v-else class="text-[11px] text-text-dim/70">{{ t('editor.selectTrackToPickColor') }}</div>
             </div>
             <!-- Ruler Area -->
             <div
@@ -1003,8 +1099,16 @@ onBeforeRouteLeave(() => {
                 @pointerdown="onLoopPointerDown('move', $event)"
               >
                 <!-- Drag handles -->
-                <div class="absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize bg-status-done/50 hover:bg-status-done" @pointerdown="onLoopPointerDown('start', $event)"></div>
-                <div class="absolute top-0 bottom-0 right-0 w-1.5 cursor-ew-resize bg-status-done/50 hover:bg-status-done" @pointerdown="onLoopPointerDown('end', $event)"></div>
+                <div class="absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize bg-status-done/50 hover:bg-status-done focus-visible:bg-status-done focus-visible:outline-2 focus-visible:outline-white"
+                  role="slider" tabindex="0" aria-orientation="horizontal"
+                  :aria-label="t('upstreamWorkspace.loopStart')" :title="t('upstreamWorkspace.handleHint')"
+                  :aria-valuemin="0" :aria-valuemax="store.project.loopRegion.end - 0.1" :aria-valuenow="store.project.loopRegion.start"
+                  @keydown="onLoopKeydown('start', $event)" @pointerdown="onLoopPointerDown('start', $event)"></div>
+                <div class="absolute top-0 bottom-0 right-0 w-1.5 cursor-ew-resize bg-status-done/50 hover:bg-status-done focus-visible:bg-status-done focus-visible:outline-2 focus-visible:outline-white"
+                  role="slider" tabindex="0" aria-orientation="horizontal"
+                  :aria-label="t('upstreamWorkspace.loopEnd')" :title="t('upstreamWorkspace.handleHint')"
+                  :aria-valuemin="store.project.loopRegion.start + 0.1" :aria-valuemax="Math.max(store.totalDuration, store.project.loopRegion.end)" :aria-valuenow="store.project.loopRegion.end"
+                  @keydown="onLoopKeydown('end', $event)" @pointerdown="onLoopPointerDown('end', $event)"></div>
               </div>
               <div
                 class="absolute top-0 bottom-0 z-20 w-[2px] bg-accent1 shadow-[0_0_8px_var(--color-accent1)] pointer-events-none"

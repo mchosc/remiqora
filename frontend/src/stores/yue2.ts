@@ -15,11 +15,16 @@ const t = i18n.global.t
 
 const HEALTH_MS = 5000
 const healthLoops = new WeakMap<object, PollingLoop>()
+type HistoryEdit = { kind: 'renamed'; title: string } | { kind: 'deleted' }
+// Only edits completed while this request is pending need reconciliation.
+// Keep them outside persisted/reactive state and discard them with the load.
+const pendingHistoryEdits = new WeakMap<object, Map<number, HistoryEdit>>()
 
 export interface Yue2Job {
   id: string
   status: JobStatus
   createdAt: number
+  title: string
   style: string
   lyrics: string
   cot: CotMode
@@ -70,6 +75,8 @@ export const useYue2Store = defineStore('yue2', {
     async loadHistory() {
       const generation = ++this._historyGeneration
       const isCurrent = () => generation === this._historyGeneration
+      const edits = new Map<number, HistoryEdit>()
+      pendingHistoryEdits.set(this, edits)
       try {
         const tracks = await tracksApi.listTracks('yue2')
         if (!isCurrent()) return
@@ -79,7 +86,8 @@ export const useYue2Store = defineStore('yue2', {
             id: `saved_${track.id}`,
             status: 'done',
             createdAt: new Date(track.created_at).getTime() || Date.now(),
-            style: track.title,
+            title: track.title,
+            style: typeof track.params.style === 'string' && track.params.style.trim() ? track.params.style : track.title,
             lyrics: track.lyrics,
             cot: track.params.cot === 'melody' || track.params.cot === 'full' ? track.params.cot : 'off',
             precision: track.params.precision === 'q4_0' ? 'q4_0' : 'q8_0',
@@ -105,14 +113,24 @@ export const useYue2Store = defineStore('yue2', {
           return job
         }))
         if (!isCurrent()) return
+        const currentSavedJobs = savedJobs.flatMap(job => {
+          const edit = job.dbId == null ? undefined : edits.get(job.dbId)
+          if (edit?.kind === 'deleted') return []
+          return [edit?.kind === 'renamed' ? { ...job, title: edit.title } : job]
+        })
         // Keep any jobs still in-flight this session (not yet in the saved list).
         const inFlightIds = new Set(this.jobs.filter((j) => !j.finalized).map((j) => j.id))
-        this.jobs = [...this.jobs.filter((j) => inFlightIds.has(j.id)), ...savedJobs].sort((a, b) => b.createdAt - a.createdAt)
+        this.jobs = [...this.jobs.filter((j) => inFlightIds.has(j.id)), ...currentSavedJobs].sort((a, b) => b.createdAt - a.createdAt)
         for (const job of this.jobs) {
           if (job.voiceApply === 'running') this._followVoice(job)
         }
+      } catch (cause) {
+        if (isCurrent()) throw cause
       } finally {
-        if (isCurrent()) this.historyLoaded = true
+        if (isCurrent()) {
+          pendingHistoryEdits.delete(this)
+          this.historyLoaded = true
+        }
       }
     },
     _trackJob(trackId: number): Yue2Job | undefined {
@@ -239,6 +257,7 @@ export const useYue2Store = defineStore('yue2', {
     },
     stopBackgroundTasks() {
       this._historyGeneration++
+      pendingHistoryEdits.delete(this)
       healthLoops.get(this)?.stop()
       for (const [trackId, controller] of Object.entries(this._voiceAborters)) {
         controller.abort()
@@ -254,6 +273,7 @@ export const useYue2Store = defineStore('yue2', {
           id: `g_${Date.now()}_${i}`,
           status: 'queued',
           createdAt: Date.now(),
+          title: params.style,
           style: params.style,
           lyrics: params.lyrics,
           cot: params.cot,
@@ -299,7 +319,7 @@ export const useYue2Store = defineStore('yue2', {
           const saved = await tracksApi.saveTrack(
             {
               model: 'yue2',
-              title: job.style,
+              title: job.title,
               lyrics: job.lyrics,
               seed: job.seed,
               duration_ms: durationMs,
@@ -378,20 +398,21 @@ export const useYue2Store = defineStore('yue2', {
       this.pendingAbcInsert = null
     },
     async deleteJob(job: Yue2Job) {
-      if (job.dbId != null) {
-        try {
-          await tracksApi.deleteTrack(job.dbId)
-        } catch {
-          // ignore - still remove locally so the UI doesn't get stuck
-        }
+      const trackId = job.dbId
+      if (trackId != null) {
+        await tracksApi.deleteTrack(trackId)
+        pendingHistoryEdits.get(this)?.set(trackId, { kind: 'deleted' })
       }
-      this.jobs = this.jobs.filter((j) => j.id !== job.id)
+      this.jobs = this.jobs.filter((j) => j.id !== job.id && (trackId == null || j.dbId !== trackId))
     },
     async renameJob(job: Yue2Job, title: string) {
-      if (job.dbId == null) return
-      await tracksApi.renameTrack(job.dbId, title)
-      const target = this.jobs.find((j) => j.id === job.id)
-      if (target) target.style = title
+      const trackId = job.dbId
+      if (trackId == null) return
+      const saved = await tracksApi.renameTrack(trackId, title)
+      const edits = pendingHistoryEdits.get(this)
+      if (edits?.get(trackId)?.kind !== 'deleted') edits?.set(trackId, { kind: 'renamed', title: saved.title })
+      const target = this._trackJob(trackId)
+      if (target) target.title = saved.title
     },
   },
 })

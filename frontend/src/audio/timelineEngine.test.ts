@@ -34,6 +34,41 @@ function midiClip(instrument?: OscillatorType): ScheduledClip {
 }
 
 describe('timeline preview and export', () => {
+  it('cuts stretched source trims and their fade envelope at the loop boundary', () => {
+    const graph = buildTimelineGraph(new AudioContext(), 1, impulse())
+    const context = TestAudioContext.instances[0]
+    const before = context.nodes.length
+    const clip: ScheduledClip = {
+      laneIndex: 0, buffer: new AudioBuffer({ numberOfChannels: 1, length: 80000, sampleRate: 8000 }),
+      timelineStart: 2, trimStart: 1, trimEnd: 4, stretchFactor: 2,
+    }
+    scheduleTimeline(graph, [clip], 3, 10, () => {}, 5)
+    const nodes = context.nodes.slice(before)
+    expect(nodes.find((node) => node.kind === 'buffer-source')?.startCalls).toEqual([[10, 3, 2]])
+    const envelope = nodes.find((node) => node.kind === 'gain')?.gain.events
+    expect(envelope?.every((event) => event.time <= 12)).toBe(true)
+    expect(envelope?.at(-1)).toEqual({ kind: 'ramp', value: 0, time: 12 })
+  })
+
+  it('cuts a stretched MIDI note at the loop end and excludes notes starting there', () => {
+    const graph = buildTimelineGraph(new AudioContext(), 1, impulse())
+    const context = TestAudioContext.instances[0]
+    const before = context.nodes.length
+    const clip = midiClip('square')
+    clip.notes?.push({ note: 72, startSec: 0.5, durationSec: 1, velocity: 1, channel: 0 })
+    scheduleTimeline(graph, [clip], 2.1, 10, () => {}, 2.6)
+    const oscillators = context.nodes.slice(before).filter((node) => node.kind === 'oscillator')
+    expect(oscillators).toHaveLength(1)
+    expect(oscillators[0]?.startCalls).toEqual([[10]])
+    expect(oscillators[0]?.stopCalls[0]).toBeCloseTo(10.5)
+  })
+
+  it('does not substitute the final sample when a trim starts beyond the source buffer', () => {
+    const graph = buildTimelineGraph(new AudioContext(), 1, impulse())
+    scheduleTimeline(graph, [{ laneIndex: 0, buffer: impulse(), timelineStart: 0, trimStart: 1, trimEnd: 2 }], 0, 0, () => {})
+    expect(TestAudioContext.instances[0].nodes.filter((node) => node.kind === 'buffer-source')).toHaveLength(0)
+  })
+
   it.each<OscillatorType>(['sawtooth', 'square', 'sine', 'triangle'])('uses the selected %s waveform and the same note envelope in export', async (instrument) => {
     const graph = buildTimelineGraph(new AudioContext(), 1, impulse())
     const preview = TestAudioContext.instances[0]

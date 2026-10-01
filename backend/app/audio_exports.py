@@ -688,6 +688,12 @@ def work_busy() -> bool:
     return bool(_tasks or _processes or _unverified or _invalid)
 
 
+def active_track_ids() -> set[int]:
+    """Project owned jobs without scanning export files across the library."""
+    return {document.track_id for document in _running.values()
+            if document.status in {"queued", "running"}}
+
+
 async def cancel_track_exports(track_id: int) -> None:
     async with _lock:
         documents = _documents(track_id)

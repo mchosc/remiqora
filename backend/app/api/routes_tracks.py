@@ -7,12 +7,14 @@ one SQLite catalog.
 from __future__ import annotations
 
 import re
+import logging
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Path as ApiPath, UploadFile
+from fastapi import APIRouter, Body, File, Form, Depends, HTTPException, Request, Path as ApiPath, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import TypeAdapter, ValidationError
 
@@ -22,11 +24,23 @@ from ..contracts import JsonObject, SavedTrack, SetTrackFavoriteRequest, TracksR
 from ..track_view import track_response as _row_to_dict
 
 from ..client_contracts import MixSettingsResponse
+from ..tagging import TaggedDownloadOptions, TaggedFileResponse
+from ..track_activity import TrackActivityResponse, get_activity
+from .tagged_download_response import download_options, tagged_download_response
 
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 
 ALLOWED_AUDIO_EXT = {"wav", "mp3", "flac"}
 ALLOWED_TRACK_MODELS = set(MODELS.keys()) | {"editor", "upload"}
+
+
+@router.get("/activity", response_model=TrackActivityResponse)
+async def track_activity() -> TrackActivityResponse:
+    try:
+        return get_activity()
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logging.getLogger(__name__).exception("Unable to read track activity")
+        raise HTTPException(503, detail="track_activity_unavailable") from exc
 
 
 def _sanitize(text: str) -> str:
@@ -166,6 +180,12 @@ async def track_audio(track_id: int):
     if not row or not Path(row["audio_path"]).exists():
         return JSONResponse({"error": "audio not found"}, status_code=404)
     return FileResponse(row["audio_path"])
+
+
+@router.get("/{track_id}/download")
+async def track_download(track_id: Annotated[int, ApiPath(gt=0, le=9_007_199_254_740_991)],
+                         options: Annotated[TaggedDownloadOptions, Depends(download_options)], request: Request) -> TaggedFileResponse:
+    return await tagged_download_response(track_id, None, None, options, request)
 
 
 @router.get("/{track_id}/abc")

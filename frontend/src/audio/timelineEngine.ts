@@ -74,6 +74,8 @@ export function scheduleTimeline(
   playFromSec: number,
   ctxStartTime: number,
   onEnded: () => void,
+  /** Exclusive timeline end of this pass, including cuts inside stretched clips. */
+  untilSec = Infinity,
 ): TimelinePlaybackHandle {
   const ctx = graph.ctx
   const sources: AudioScheduledSourceNode[] = []
@@ -97,7 +99,7 @@ export function scheduleTimeline(
       const stretchedTrimEnd = clip.trimEnd * sf
       const clipDuration = stretchedTrimEnd - stretchedTrimStart
       const clipTimelineEnd = clip.timelineStart + clipDuration
-      if (clipDuration <= 0 || clipTimelineEnd <= playFromSec) continue
+      if (clipDuration <= 0 || clipTimelineEnd <= playFromSec || clip.timelineStart >= untilSec) continue
 
       let when: number
       let offset: number
@@ -126,9 +128,9 @@ export function scheduleTimeline(
         
           // Clamp to clip bounds
           const actualTimelineStart = Math.max(clip.timelineStart, noteTimelineStart)
-          const actualTimelineEnd = Math.min(clipTimelineEnd, noteTimelineEnd)
+          const actualTimelineEnd = Math.min(clipTimelineEnd, noteTimelineEnd, untilSec)
         
-          if (actualTimelineEnd <= playFromSec) continue // already played
+          if (actualTimelineEnd <= playFromSec || actualTimelineStart >= untilSec) continue
         
           const noteDuration = actualTimelineEnd - actualTimelineStart
           const noteWhen = actualTimelineStart >= playFromSec
@@ -174,9 +176,11 @@ export function scheduleTimeline(
     
       // A negative offset is a RangeError in AudioBufferSourceNode.start(), which
       // would abort scheduling half-way and leave already-started sources unstoppable.
-      offset = Math.min(Math.max(0, offset), Math.max(0, clip.buffer.duration - 0.001))
-      duration = Math.max(0, Math.min(duration, clip.buffer.duration - offset))
+      offset = Math.max(0, offset)
+      duration = Math.max(0, Math.min(duration, clip.buffer.duration - offset, untilSec - Math.max(playFromSec, clip.timelineStart)))
       if (duration <= 0) continue
+      const scheduledTimelineEnd = Math.max(playFromSec, clip.timelineStart) + duration
+      const boundedClipDuration = scheduledTimelineEnd - clip.timelineStart
 
       const src = ctx.createBufferSource()
       sources.push(src)
@@ -184,13 +188,13 @@ export function scheduleTimeline(
 
       const fadeGain = ctx.createGain()
       fadeGains.push(fadeGain)
-      const inFadeSec = Math.min(Math.max(0.005, clip.fadeInDuration || 0.015), clipDuration / 2)
-      const outFadeSec = Math.min(Math.max(0.005, clip.fadeOutDuration || 0.015), clipDuration / 2)
+      const inFadeSec = Math.min(Math.max(0.005, clip.fadeInDuration || 0.015), boundedClipDuration / 2)
+      const outFadeSec = Math.min(Math.max(0.005, clip.fadeOutDuration || 0.015), boundedClipDuration / 2)
 
       const absStart = clip.timelineStart
       const absFadeInEnd = absStart + inFadeSec
-      const absFadeOutStart = clipTimelineEnd - outFadeSec
-      const absEnd = clipTimelineEnd
+      const absFadeOutStart = scheduledTimelineEnd - outFadeSec
+      const absEnd = scheduledTimelineEnd
 
       const toCtxTime = (t: number) => ctxStartTime + (t - playFromSec)
 
@@ -223,8 +227,8 @@ export function scheduleTimeline(
       fadeGain.connect(graph.lanes[clip.laneIndex].input)
       src.start(when, offset, duration)
 
-      if (clipTimelineEnd > lastEnd) {
-        lastEnd = clipTimelineEnd
+      if (scheduledTimelineEnd > lastEnd) {
+        lastEnd = scheduledTimelineEnd
         lastSrc = src
       }
     }

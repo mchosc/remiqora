@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, NoReturn
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Request, Path
 from fastapi.responses import FileResponse
 
 from .. import audio_exports
@@ -14,6 +14,8 @@ from ..audio_encoding import (
     AudioExportsResponse,
     CreateAudioExportRequest,
 )
+from ..tagging import TaggedDownloadOptions, TaggedFileResponse
+from .tagged_download_response import download_options, tagged_download_response
 
 router = APIRouter(prefix="/api/tracks", tags=["audio-exports"])
 TrackId = Annotated[int, Path(gt=0)]
@@ -101,3 +103,9 @@ async def export_audio(
         return FileResponse(path, filename=f"{version_id}{path.suffix}")
     except audio_exports.AudioExportError as exc:
         _raise(exc)
+
+
+@router.get("/{track_id}/versions/{version_id}/exports/{export_id}/download")
+async def export_download(track_id: TrackId, version_id: VersionId, export_id: VersionId,
+                          options: Annotated[TaggedDownloadOptions, Depends(download_options)], request: Request) -> TaggedFileResponse:
+    return await tagged_download_response(track_id, version_id, export_id, options, request)

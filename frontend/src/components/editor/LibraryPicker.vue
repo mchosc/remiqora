@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onBeforeUnmount, onMounted, ref, computed } from 'vue'
+import { useDialogA11y } from '../../composables/useDialogA11y'
 import { useI18n } from 'vue-i18n'
 import * as tracksApi from '../../api/tracks'
 import type { SavedTrack } from '../../api/tracks'
@@ -14,14 +15,20 @@ const emit = defineEmits<{
 const tracks = ref<SavedTrack[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const dialog = ref<HTMLElement | null>(null)
+const controller = new AbortController()
+let active = true
+useDialogA11y(dialog, () => active, () => emit('close'))
+onBeforeUnmount(() => { active = false; controller.abort() })
 
 onMounted(async () => {
   try {
-    tracks.value = await tracksApi.listTracks()
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    const loaded = await tracksApi.listTracks(undefined, controller.signal)
+    if (active) tracks.value = loaded
+  } catch {
+    if (active) error.value = t('upstreamWorkspace.libraryFailed')
   } finally {
-    loading.value = false
+    if (active) loading.value = false
   }
 })
 
@@ -33,23 +40,25 @@ const STEM_LABELS = computed<Record<string, string>>(() => ({
 }))
 
 function pick(sourceUrl: string, sourceLabel: string) {
-  emit('pick', { sourceUrl, sourceLabel })
+  if (active) emit('pick', { sourceUrl, sourceLabel })
 }
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 async function onFileSelected(event: Event) {
-  const input = event.target as HTMLInputElement
+  const input = event.target
+  if (!(input instanceof HTMLInputElement)) return
   const file = input.files?.[0]
   if (!file) return
   uploading.value = true
   error.value = null
   try {
     const uploaded = await tracksApi.uploadTrack(file)
+    if (!active) return
     tracks.value.unshift(uploaded)
     pick(uploaded.audio_url, uploaded.title || file.name)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+  } catch {
+    if (active) error.value = t('upstreamWorkspace.uploadFailed')
   } finally {
     uploading.value = false
     if (fileInput.value) fileInput.value.value = ''
@@ -60,7 +69,7 @@ async function onFileSelected(event: Event) {
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" @mousedown.self="emit('close')">
-      <div class="flex max-h-[80vh] w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl bg-panel p-4">
+      <div ref="dialog" role="dialog" aria-modal="true" :aria-label="t('library.title')" tabindex="-1" class="flex max-h-[80vh] w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl bg-panel p-4">
         <div class="flex items-center justify-between">
           <p class="text-sm font-medium text-text">{{ t('library.title') }}</p>
           <button type="button" class="text-text-dim hover:text-status-failed" :aria-label="t('common.close')" :title="t('common.close')" @click="emit('close')">✕</button>
