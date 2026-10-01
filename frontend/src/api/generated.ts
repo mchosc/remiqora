@@ -49,11 +49,12 @@ export type ApplyStatusResponse = {
   "error": string
   "error_code": string
   "audio_url": string
-  "phase"?: "" | "waiting" | "separating" | "preparing" | "converting" | "mixing"
+  "phase"?: "" | "waiting" | "separating" | "preparing" | "loading" | "analyzing" | "converting" | "mixing"
   "voice_id"?: string
   "voice_name"?: string
   "started_at"?: number
   "duration_sec"?: number
+  "job_progress"?: (VoiceJobProgress | null)
 }
 
 export type ApplyVoiceRequest = {
@@ -107,6 +108,7 @@ export type AudioVersion = {
   "error_code"?: string
   "duration_ms"?: (number | null)
   "source_version_id"?: (string | null)
+  "job_progress"?: (VoiceJobProgress | null)
 }
 
 export type BuildVoiceRequest = {
@@ -696,7 +698,7 @@ export type VoiceExtractReport = {
 
 export type VoiceJobProgress = {
   "job_id": string
-  "kind": "preparation" | "coverage" | "build"
+  "kind": "preparation" | "coverage" | "build" | "apply"
   "preparation_revision"?: string
   "status"?: "queued" | "running" | "done" | "failed" | "cancelled"
   "queued_at": number
@@ -704,14 +706,16 @@ export type VoiceJobProgress = {
   "finished_at"?: (number | null)
   "phase_started_at"?: (number | null)
   "observed_at": number
-  "phase"?: "queued" | "inspecting" | "separating" | "normalizing" | "screening" | "cleaning" | "slicing" | "references" | "coverage" | "assembling" | "merging" | "base_model" | "waiting_gpu" | "training" | "publishing" | "complete"
+  "phase"?: "queued" | "inspecting" | "separating" | "normalizing" | "screening" | "cleaning" | "slicing" | "references" | "coverage" | "assembling" | "merging" | "base_model" | "waiting_gpu" | "training" | "publishing" | "complete" | "preparing" | "loading" | "analyzing" | "converting" | "mixing"
   "phase_current"?: number
   "phase_total"?: number
-  "phase_unit"?: "files" | "samples" | "steps" | "tasks"
+  "phase_unit"?: "files" | "samples" | "steps" | "tasks" | "chunks"
   "files_completed"?: number
   "files_total"?: number
   "current_file"?: string
   "estimated_phase_remaining_sec"?: (number | null)
+  "queue_reason"?: "" | "voice_training" | "voice_conversion" | "voice_preparation" | "stem_separation" | "video_generation" | "gpu_busy"
+  "queue_label"?: string
 }
 
 export type VoiceModelChoice = {
@@ -1324,6 +1328,205 @@ const schemas = {
     "title": "AceAdoptRequest",
     "type": "object"
   },
+  "VoiceJobProgress": {
+    "description": "Persisted wall-clock timing; estimates describe only the current phase.",
+    "properties": {
+      "job_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "title": "Job Id",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "preparation",
+          "coverage",
+          "build",
+          "apply"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "preparation_revision": {
+        "default": "",
+        "maxLength": 128,
+        "title": "Preparation Revision",
+        "type": "string"
+      },
+      "status": {
+        "default": "queued",
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "failed",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "queued_at": {
+        "minimum": 0,
+        "title": "Queued At",
+        "type": "number"
+      },
+      "started_at": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Started At"
+      },
+      "finished_at": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Finished At"
+      },
+      "phase_started_at": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Phase Started At"
+      },
+      "observed_at": {
+        "minimum": 0,
+        "title": "Observed At",
+        "type": "number"
+      },
+      "phase": {
+        "default": "queued",
+        "enum": [
+          "queued",
+          "inspecting",
+          "separating",
+          "normalizing",
+          "screening",
+          "cleaning",
+          "slicing",
+          "references",
+          "coverage",
+          "assembling",
+          "merging",
+          "base_model",
+          "waiting_gpu",
+          "training",
+          "publishing",
+          "complete",
+          "preparing",
+          "loading",
+          "analyzing",
+          "converting",
+          "mixing"
+        ],
+        "title": "Phase",
+        "type": "string"
+      },
+      "phase_current": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Phase Current",
+        "type": "integer"
+      },
+      "phase_total": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Phase Total",
+        "type": "integer"
+      },
+      "phase_unit": {
+        "default": "tasks",
+        "enum": [
+          "files",
+          "samples",
+          "steps",
+          "tasks",
+          "chunks"
+        ],
+        "title": "Phase Unit",
+        "type": "string"
+      },
+      "files_completed": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Files Completed",
+        "type": "integer"
+      },
+      "files_total": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Files Total",
+        "type": "integer"
+      },
+      "current_file": {
+        "default": "",
+        "maxLength": 255,
+        "title": "Current File",
+        "type": "string"
+      },
+      "estimated_phase_remaining_sec": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Estimated Phase Remaining Sec"
+      },
+      "queue_reason": {
+        "default": "",
+        "enum": [
+          "",
+          "voice_training",
+          "voice_conversion",
+          "voice_preparation",
+          "stem_separation",
+          "video_generation",
+          "gpu_busy"
+        ],
+        "title": "Queue Reason",
+        "type": "string"
+      },
+      "queue_label": {
+        "default": "",
+        "maxLength": 200,
+        "title": "Queue Label",
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id",
+      "kind",
+      "queued_at",
+      "observed_at"
+    ],
+    "title": "VoiceJobProgress",
+    "type": "object"
+  },
   "AudioVersion": {
     "additionalProperties": false,
     "properties": {
@@ -1440,6 +1643,17 @@ const schemas = {
         ],
         "default": null,
         "title": "Source Version Id"
+      },
+      "job_progress": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VoiceJobProgress"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
       }
     },
     "required": [
@@ -3560,178 +3774,6 @@ const schemas = {
     "title": "VoiceCoverageSummary",
     "type": "object"
   },
-  "VoiceJobProgress": {
-    "description": "Persisted wall-clock timing; estimates describe only the current phase.",
-    "properties": {
-      "job_id": {
-        "maxLength": 128,
-        "minLength": 1,
-        "title": "Job Id",
-        "type": "string"
-      },
-      "kind": {
-        "enum": [
-          "preparation",
-          "coverage",
-          "build"
-        ],
-        "title": "Kind",
-        "type": "string"
-      },
-      "preparation_revision": {
-        "default": "",
-        "maxLength": 128,
-        "title": "Preparation Revision",
-        "type": "string"
-      },
-      "status": {
-        "default": "queued",
-        "enum": [
-          "queued",
-          "running",
-          "done",
-          "failed",
-          "cancelled"
-        ],
-        "title": "Status",
-        "type": "string"
-      },
-      "queued_at": {
-        "minimum": 0,
-        "title": "Queued At",
-        "type": "number"
-      },
-      "started_at": {
-        "anyOf": [
-          {
-            "minimum": 0,
-            "type": "number"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "default": null,
-        "title": "Started At"
-      },
-      "finished_at": {
-        "anyOf": [
-          {
-            "minimum": 0,
-            "type": "number"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "default": null,
-        "title": "Finished At"
-      },
-      "phase_started_at": {
-        "anyOf": [
-          {
-            "minimum": 0,
-            "type": "number"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "default": null,
-        "title": "Phase Started At"
-      },
-      "observed_at": {
-        "minimum": 0,
-        "title": "Observed At",
-        "type": "number"
-      },
-      "phase": {
-        "default": "queued",
-        "enum": [
-          "queued",
-          "inspecting",
-          "separating",
-          "normalizing",
-          "screening",
-          "cleaning",
-          "slicing",
-          "references",
-          "coverage",
-          "assembling",
-          "merging",
-          "base_model",
-          "waiting_gpu",
-          "training",
-          "publishing",
-          "complete"
-        ],
-        "title": "Phase",
-        "type": "string"
-      },
-      "phase_current": {
-        "default": 0,
-        "minimum": 0,
-        "title": "Phase Current",
-        "type": "integer"
-      },
-      "phase_total": {
-        "default": 0,
-        "minimum": 0,
-        "title": "Phase Total",
-        "type": "integer"
-      },
-      "phase_unit": {
-        "default": "tasks",
-        "enum": [
-          "files",
-          "samples",
-          "steps",
-          "tasks"
-        ],
-        "title": "Phase Unit",
-        "type": "string"
-      },
-      "files_completed": {
-        "default": 0,
-        "minimum": 0,
-        "title": "Files Completed",
-        "type": "integer"
-      },
-      "files_total": {
-        "default": 0,
-        "minimum": 0,
-        "title": "Files Total",
-        "type": "integer"
-      },
-      "current_file": {
-        "default": "",
-        "maxLength": 255,
-        "title": "Current File",
-        "type": "string"
-      },
-      "estimated_phase_remaining_sec": {
-        "anyOf": [
-          {
-            "minimum": 0,
-            "type": "number"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "default": null,
-        "title": "Estimated Phase Remaining Sec"
-      }
-    },
-    "required": [
-      "job_id",
-      "kind",
-      "queued_at",
-      "observed_at"
-    ],
-    "title": "VoiceJobProgress",
-    "type": "object"
-  },
   "VoicePitchBin": {
     "properties": {
       "midi_note": {
@@ -5154,6 +5196,8 @@ const schemas = {
           "waiting",
           "separating",
           "preparing",
+          "loading",
+          "analyzing",
           "converting",
           "mixing"
         ],
@@ -5181,6 +5225,17 @@ const schemas = {
         "minimum": 0,
         "title": "Duration Sec",
         "type": "number"
+      },
+      "job_progress": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VoiceJobProgress"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
       }
     },
     "required": [

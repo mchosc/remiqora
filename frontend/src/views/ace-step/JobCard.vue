@@ -41,12 +41,7 @@ const sourceTrackId = computed(() => {
   return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null
 })
 const replacementCancelled = computed(() => replacement.value && props.job.voiceErrorCode === 'cancelled')
-const shownStatus = computed(() => voiceRunning.value ? 'running' : replacement.value && props.job.voiceApply === 'failed' ? replacementCancelled.value ? 'cancelled' : 'failed' : props.job.status)
-const voiceDurationSec = computed(() => {
-  if (props.job.durationSec && props.job.durationSec > 0) return props.job.durationSec
-  const requested = Number(props.job.params?.audio_duration)
-  return Number.isFinite(requested) && requested > 0 ? requested : null
-})
+const shownStatus = computed(() => voiceRunning.value ? props.job.voiceProgress?.status === 'queued' ? 'queued' : 'running' : replacement.value && props.job.voiceApply === 'failed' ? replacementCancelled.value ? 'cancelled' : 'failed' : props.job.status)
 
 const summary = computed(() => {
   const params = props.job.params || {}
@@ -160,12 +155,11 @@ function copyParamsToForm() {
       </div>
     </div>
     <VoiceApplyStatus
-      v-if="voiceRunning && view === 'list'"
+      v-if="voiceRunning && view === 'list' && !showBody"
       class="px-3 pb-2"
       :phase="job.voicePhase"
       :voice-name="job.voiceName"
-      :started-at="job.voiceStartedAt"
-      :duration-sec="voiceDurationSec"
+      :job-progress="job.voiceProgress"
     />
     <div v-if="showBody" :class="view === 'list' ? 'space-y-3 px-3 pb-3' : 'contents'">
     <div v-if="view === 'cards'" class="flex items-start justify-between gap-3">
@@ -183,21 +177,20 @@ function copyParamsToForm() {
       </div>
       <div class="flex shrink-0 items-center gap-2">
         <FavoriteTrackButton v-if="singleSavedTrack" :track-id="singleSavedTrack.id" :label="favoriteLabel(singleSavedTrack.index)" />
-        <StatusBadge :status="shownStatus" :label="voiceRunning ? t('voiceClone.applyingBadge') : undefined" />
+        <StatusBadge :status="shownStatus" :label="voiceRunning && shownStatus !== 'queued' ? t('voiceClone.applyingBadge') : undefined" />
         <button v-if="voiceRunning && replacement || !voiceRunning && (job.status === 'queued' || job.status === 'running')" type="button" :disabled="actionPending || job.voiceActionPending" class="text-text-dim hover:text-status-failed" :title="t('aceJob.cancel')" :aria-label="t('aceJob.cancel')" @click="cancel">⏹</button>
         <button v-else type="button" :disabled="actionPending || job.voiceActionPending" class="text-text-dim hover:text-status-failed" :title="t('aceJob.delete')" :aria-label="t('aceJob.delete')" @click="remove">✕</button>
       </div>
     </div>
 
     <VoiceApplyStatus
-      v-if="voiceRunning && view === 'cards'"
+      v-if="voiceRunning && view === 'cards' && !savedTracks.length"
       :phase="job.voicePhase"
       :voice-name="job.voiceName"
-      :started-at="job.voiceStartedAt"
-      :duration-sec="voiceDurationSec"
+      :job-progress="job.voiceProgress"
     />
 
-    <div v-else-if="job.status === 'queued' || job.status === 'running'" class="space-y-1">
+    <div v-else-if="!voiceRunning && (job.status === 'queued' || job.status === 'running')" class="space-y-1">
       <ProgressBar :value="job.progress" />
       <p class="text-xs text-text-dim">{{ job.stage || (job.status === 'queued' ? t('aceJob.queued') : t('aceJob.generating')) }}</p>
     </div>

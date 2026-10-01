@@ -9,7 +9,7 @@ import { clearVoiceWatch, markVoiceWatch, noteVoice, voiceWatchActive } from './
 import type { JobStatus } from '../types'
 import { i18n } from '../i18n'
 import { createPollingLoop, type PollContext, type PollingLoop } from '../composables/polling'
-import type { JsonObject } from '../api/contracts'
+import type { JsonObject, VoiceJobProgress } from '../api/contracts'
 
 const t = i18n.global.t
 
@@ -40,6 +40,7 @@ export interface Yue2Job {
   voiceId?: string
   voiceName?: string
   voiceStartedAt?: number
+  voiceProgress?: VoiceJobProgress | null
   voiceError?: string
   voiceErrorCode?: string
   params?: JsonObject
@@ -97,6 +98,7 @@ export const useYue2Store = defineStore('yue2', {
             voiceId: voice.voiceId,
             voiceName: voice.voiceName,
             voiceStartedAt: voice.voiceStartedAt,
+            voiceProgress: voice.voiceProgress,
             voiceError: voice.voiceError,
             voiceErrorCode: voice.voiceErrorCode,
           }
@@ -119,6 +121,9 @@ export const useYue2Store = defineStore('yue2', {
     _onVoice(trackId: number, row: ApplyStatus) {
       const live = this._trackJob(trackId)
       if (!live) return
+      // The polling helper follows its terminal callback with a URL-only
+      // result. Keep that measured receipt; a new active job must reset it.
+      if (row.job_progress !== undefined || live.voiceProgress?.status !== row.status || row.status === 'queued' || row.status === 'running') live.voiceProgress = row.job_progress ?? null
       if (row.status === 'done') {
         if (row.audio_url) {
           if (live.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(live.audioUrl)
@@ -153,6 +158,7 @@ export const useYue2Store = defineStore('yue2', {
       voiceId?: string
       voiceName?: string
       voiceStartedAt?: number
+      voiceProgress?: VoiceJobProgress | null
       voiceError?: string
       voiceErrorCode?: string
       audioUrl?: string

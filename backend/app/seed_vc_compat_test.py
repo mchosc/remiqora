@@ -151,19 +151,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--num-workers', type=int, default=0)
 '''
-INFERENCE_SOURCE = '''import argparse
-import random
-import numpy as np
-import torch
-@torch.no_grad()
-def main(args):
-    model, semantic_fn, f0_fn, vocoder_fn, campplus_model, mel_fn, mel_fn_args = load_models(args)
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--fp16", type=str2bool, default=True)
-    args = parser.parse_args()
-    main(args)
-'''
+INFERENCE_SOURCE = (Path(__file__).with_name('fixtures') / 'seed_vc_inference.txt').read_text()
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -242,6 +230,51 @@ class CompatibilityTests(unittest.TestCase):
         self.assertLess(source.index('torch.manual_seed(args.seed)'), source.index('= load_models(args)'))
         self.assertIn('np.random.seed(args.seed)', source)
         self.assertIn('random.seed(args.seed)', source)
+
+    def test_progress_chunk_total_matches_independent_overlap_loop(self):
+        self.apply()
+        tree = ast.parse((self.engine / 'inference.py').read_text())
+        count_fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_remiqora_chunk_count')
+        namespace: dict[str, object] = {}
+        exec(compile(ast.Module(body=[count_fn], type_ignores=[]), '<vendor-progress>', 'exec'), namespace)
+        count = namespace['_remiqora_chunk_count']
+        self.assertTrue(callable(count))
+        for window in [17, 100, 1720]:
+            for frames in [1, window, window + 1, 2 * window, 20000]:
+                position, expected = 0, 0
+                while position < frames:
+                    expected += 1
+                    if position + window >= frames:
+                        break
+                    position += window - 16
+                self.assertEqual(count(frames, window, 16), expected)
+        with self.assertRaisesRegex(ValueError, 'invalid_source_window'):
+            count(100, 16, 16)
+
+    def test_progress_emits_actual_completed_chunks_and_timestamped_phases(self):
+        self.apply()
+        source = (self.engine / 'inference.py').read_text()
+        self.assertIn("'at': time.time()", source)
+        self.assertLess(source.index("_remiqora_progress('loading')"), source.index('= load_models(args)'))
+        self.assertLess(source.index('= load_models(args)'), source.index("_remiqora_progress('analyzing')"))
+        # Every branch publishes the output before it reports completion,
+        # including the first/final short chunk and the overlapping final one.
+        tree = ast.parse(source)
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+        loop = next(node for node in main.body if isinstance(node, ast.While) and 'processed_frames' in ast.unparse(node.test))
+        completions = [node for node in ast.walk(loop) if isinstance(node, ast.Call)
+                       and isinstance(node.func, ast.Name) and node.func.id == '_remiqora_progress']
+        self.assertEqual(len(completions), 4)
+        self.assertEqual(source.count("_remiqora_completed_chunks += 1"), 4)
+
+    def test_unknown_chunk_loop_rejects_before_partial_edits(self):
+        inference = self.engine / 'inference.py'
+        inference.write_text(INFERENCE_SOURCE.replace('processed_frames += vc_target.size(2) - overlap_frame_len',
+                                                      'processed_frames += different_stride'))
+        original = {path: path.read_bytes() for path in self.engine.rglob('*.py')}
+        with self.assertRaises(seed_vc_compat.EngineCompatibilityError):
+            self.apply()
+        self.assertEqual(original, {path: path.read_bytes() for path in self.engine.rglob('*.py')})
 
     def test_fresh_setup_invokes_tracked_compatibility_helper(self):
         setup = (Path(__file__).resolve().parents[2] / 'setup_voice.sh').read_text()

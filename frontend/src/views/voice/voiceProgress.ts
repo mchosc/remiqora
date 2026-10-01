@@ -4,12 +4,16 @@ import type { VoiceReviewState, VoiceWorkspaceStep } from './voiceWorkspace'
 /** Total wall time includes queueing; terminal timestamps freeze after reload. */
 export function voiceElapsedSeconds(progress: VoiceJobProgress | null | undefined, now: number): number | null {
   if (!progress) return null
+  if (progress.status !== 'queued' && progress.status !== 'running' && progress.finished_at == null) return null
   return Math.max(0, (progress.finished_at ?? now) - progress.queued_at)
 }
 
 export function voicePhaseRemainingSeconds(progress: VoiceJobProgress | null | undefined, now: number): number | null {
   if (!progress || progress.status !== 'running' || progress.estimated_phase_remaining_sec == null) return null
-  const remaining = progress.estimated_phase_remaining_sec - Math.max(0, now - progress.observed_at)
+  const age = Math.max(0, now - progress.observed_at)
+  // Once an observation's estimate expires, wait for new measured progress
+  // rather than claiming the stage is complete or leaving a zero countdown.
+  const remaining = progress.estimated_phase_remaining_sec - age
   return remaining > 0 ? remaining : null
 }
 

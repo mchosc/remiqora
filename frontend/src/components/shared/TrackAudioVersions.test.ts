@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, ref, type App } from 'vue'
 import TrackAudioVersions from './TrackAudioVersions.vue'
 import { i18n, setLocale } from '../../i18n'
-import type { AudioVersion, AudioExportResponse } from '../../api/contracts'
+import type { AudioVersion, AudioExportResponse, VoiceJobProgress } from '../../api/contracts'
 const api = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), cancel: vi.fn(), retry: vi.fn(), exports: vi.fn(), export: vi.fn(), cancelExport: vi.fn(), retryExport: vi.fn(), voices: vi.fn() }))
 vi.mock('../../api/audioVersions', () => ({ listAudioVersions: api.list, createAudioVersion: api.create, cancelAudioVersion: api.cancel, retryAudioVersion: api.retry }))
 vi.mock('../../api/audioExports', () => ({ listAudioExports: api.exports, createAudioExport: api.export, cancelAudioExport: api.cancelExport, retryAudioExport: api.retryExport }))
@@ -208,4 +208,48 @@ it('translates the file controls and selected download label in Russian', async 
   expect(node.textContent).toContain('Исходник · WAV')
   expect(node.querySelector('a[download]')?.textContent).toContain('Скачать выбранное аудио (WAV)')
   expect(node.textContent).not.toContain('trackAudio.')
+})
+
+const conversionProgress: VoiceJobProgress = { job_id: 'apply-42', kind: 'apply', status: 'queued', queued_at: 100, observed_at: 200, phase: 'waiting_gpu', queue_reason: 'voice_training', queue_label: 'SackJo22', phase_total: 0 }
+it('keeps every active conversion and its queue reason visible while Original plays', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(200_000)
+  const converting = { ...voice, status: 'running', audio_url: null, job_progress: { ...conversionProgress, job_id: 'other-42', status: 'running', phase: 'converting', phase_current: 2, phase_total: 8, phase_unit: 'chunks', estimated_phase_remaining_sec: 60 } } satisfies AudioVersion
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, { ...queued, job_progress: conversionProgress }, converting] })
+  const node = mount(); await settle()
+  expect(button(node, 'Original').getAttribute('aria-pressed')).toBe('true')
+  expect(node.querySelector('audio')?.getAttribute('src')).toBe('/original.wav')
+  expect(node.querySelectorAll('[data-voice-apply-progress]')).toHaveLength(2)
+  expect(node.textContent).toContain('Waiting for voice training: SackJo22')
+  expect(node.textContent).toContain('2 / 8 audio sections')
+  expect(node.textContent).toContain('Elapsed: 1:40')
+  expect(node.textContent).toContain('Current stage remaining: ≈ 1:00')
+  expect(button(node, 'Other singer · Waiting for voice training')).toBeDefined()
+  expect(button(node, 'Singer · Converting voice')).toBeDefined()
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, { ...queued, job_progress: { ...conversionProgress, status: 'running', phase: 'loading', queue_reason: '', queue_label: '' } }, converting] })
+  await vi.advanceTimersByTimeAsync(2500); await settle()
+  expect(node.textContent).toContain('Loading the voice model')
+  expect(node.textContent).not.toContain('Waiting for voice training: SackJo22')
+  expect(node.querySelector('audio')?.getAttribute('src')).toBe('/original.wav')
+  app?.unmount(); app = undefined; expect(vi.getTimerCount()).toBe(0)
+})
+it('can cancel a queued conversion without selecting it or interrupting Original playback', async () => {
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, { ...queued, job_progress: conversionProgress }] })
+  api.cancel.mockResolvedValue({ ...queued, status: 'cancelled', job_progress: { ...conversionProgress, status: 'cancelled', finished_at: 210 } })
+  const node = mount(); await settle(); button(node, 'Original').click(); await settle()
+  button(node, 'Cancel').click(); await settle()
+  expect(api.cancel).toHaveBeenCalledWith(42, queued.id, expect.any(AbortSignal))
+  expect(node.querySelector('audio')?.getAttribute('src')).toBe('/original.wav')
+  expect(node.querySelectorAll('[data-voice-apply-progress]')).toHaveLength(0)
+})
+it('restores a completed selected voice elapsed time from its receipt and keeps it frozen', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(300_000)
+  const completed = { ...voice, job_progress: { ...conversionProgress, status: 'done', phase: 'complete', finished_at: 250 } } satisfies AudioVersion
+  api.list.mockResolvedValue({ track_id: 42, original_available: true, versions: [original, completed] })
+  const node = mount(); await settle()
+  expect(node.querySelector('[data-voice-apply-progress]')?.textContent).toContain('Elapsed: 2:30')
+  expect(node.querySelector('[data-voice-apply-progress]')?.textContent).toContain('Done')
+  expect(node.querySelector('[data-voice-apply-progress]')?.textContent).not.toContain('remaining')
+  await vi.advanceTimersByTimeAsync(60_000); await settle()
+  expect(node.querySelector('[data-voice-apply-progress]')?.textContent).toContain('Elapsed: 2:30')
+  expect(vi.getTimerCount()).toBe(0)
 })

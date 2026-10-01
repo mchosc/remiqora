@@ -99,7 +99,7 @@ Attaching a reference track unlocks these scenarios:
 
 Plus: 10–300 s duration, batch of 1/2/4 variants, mp3/wav/flac formats, advanced parameters (BPM, key, time signature, vocal language, inference steps, guidance scale, seed), LoRA adapter support with adjustable strength, local presets, and a "Stop all" button for bulk job cancellation.
 
-New ACE submissions retain the engine's WAV source and create the requested-format export with the profile captured from **Settings** at submission. Voice conversion retains its separate WAV output. See [audio export quality](docs/audio-export-quality.md) for explicit MP3/WAV/FLAC profiles and source-quality limits; higher export bit depth does not recover missing source detail.
+New ACE submissions retain the engine's WAV source and create the requested-format export with the profile captured from **Settings** at submission. Voice conversion retains its separate WAV output. See [audio export quality](docs/audio-export-quality.md) for explicit MP3/WAV/FLAC profiles and source-quality limits; higher export bit depth does not recover missing source detail. [Voice conversion status](docs/voice-conversion-progress.md) explains queue reasons, stages, elapsed time and measured stage estimates.
 
 ## YuE2 and SheetSage2: generation
 
@@ -197,7 +197,7 @@ The desktop app additionally uses [Electron](https://www.electronjs.org) (MIT), 
 
 ## License & liability for generated content
 
-This repository's code is [MIT-licensed](LICENSE), provided as is without warranty. Keep the copyright and license notices when redistributing it. Original Remiqora author: Nikolay Cherkashin ([inikolax](https://github.com/inikolax)); upstream project: [inikolax/remiqora](https://github.com/inikolax/remiqora). Fork development is maintained in [mchosc/remiqora](https://github.com/mchosc/remiqora).
+Remiqora's application code is [MIT-licensed](LICENSE), provided as is without warranty. Inspected [Seed-VC compatibility excerpts](backend/app/fixtures/README.md) retain the vendor's GPL version 3 license. Keep the applicable copyright and license notices when redistributing code. Original Remiqora author: Nikolay Cherkashin ([inikolax](https://github.com/inikolax)); upstream project: [inikolax/remiqora](https://github.com/inikolax/remiqora). Fork development is maintained in [mchosc/remiqora](https://github.com/mchosc/remiqora).
 
 The repository license does not replace the separate licenses or terms for engines, model weights, training/reference material or generated outputs. The table above describes code licenses. Check the terms supplied with the exact model weights and other material you use; this fork does not grant commercial rights to them. See [contributing](CONTRIBUTING.md) for attribution and model-license requirements.
 

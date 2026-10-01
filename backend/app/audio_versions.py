@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError, field_validator
 
 from . import db
 from . import audio_version_store as store
@@ -23,6 +23,8 @@ from .atomic_files import read_object
 from .audio_version_contracts import AudioVersion, AudioVersionId, TrackAudioVersionsResponse
 from .contracts import Contract, JobStatus, JsonObject
 from .job_lifecycle import await_cleanup
+from .voice_contracts import VoiceJobProgress
+from .voice_progress import read_progress
 
 logger = logging.getLogger(__name__)
 _ACTIVE = {'queued', 'running'}
@@ -34,6 +36,12 @@ class _ApplyReceipt(Contract):
     status: JobStatus
     audio_version_id: AudioVersionId | None = None
     error_code: str = Field(default='', max_length=200)
+    job_progress: VoiceJobProgress | None = None
+
+    @field_validator('job_progress', mode='before')
+    @classmethod
+    def optional_progress(cls, value: object) -> VoiceJobProgress | None:
+        return read_progress(value)
 
 
 def _receipt(worker_track_id: int) -> _ApplyReceipt | None:
@@ -195,6 +203,15 @@ def _stored(track_id: int, version_id: str) -> store.StoredAudioVersion:
 
 def _public(record: store.StoredAudioVersion) -> AudioVersion:
     public = record.public.model_copy(deep=True)
+    if record.worker_track_id is not None:
+        from . import voice_build
+        active = voice_build._applies.get(record.worker_track_id)
+        if active is not None and active.audio_version_id == public.id:
+            public.job_progress = read_progress(voice_build._apply_payload(active).get('job_progress'))
+        else:
+            receipt = _receipt(record.worker_track_id)
+            if receipt is not None and receipt.audio_version_id == public.id:
+                public.job_progress = receipt.job_progress
     if public.status == 'done' and record.path is not None:
         try:
             path = _contained(record.path)
@@ -218,6 +235,7 @@ def _reconcile(record: store.StoredAudioVersion) -> None:
     status: JobStatus = 'failed'
     error = 'interrupted'
     if worker is not None:
+        voice_build.apply_status(worker)  # Freeze an interrupted receipt once.
         receipt = _receipt(worker)
         if receipt is not None and receipt.audio_version_id == record.public.id and receipt.status not in _ACTIVE:
             status, error = receipt.status, receipt.error_code

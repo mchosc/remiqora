@@ -1,5 +1,6 @@
 import type { ApplyStatus } from '../api/voices'
 import { rememberVoiceClock, voiceClock } from './voiceClock'
+import type { VoiceJobProgress } from '../api/contracts'
 
 const watching = new Set<number>()
 
@@ -20,6 +21,7 @@ export interface VoiceNote {
   voiceId: string
   voiceName: string
   voiceStartedAt: number
+  voiceProgress: VoiceJobProgress | null
 }
 
 export function noteVoice(trackId: number, row: ApplyStatus): VoiceNote {
@@ -31,5 +33,5 @@ export function noteVoice(trackId: number, row: ApplyStatus): VoiceNote {
   if (!clock || clock.startedAt !== startedAt || clock.voiceId !== voiceId || clock.voiceName !== voiceName) {
     rememberVoiceClock(trackId, { startedAt, voiceId, voiceName })
   }
-  return { voicePhase: row.phase || '', voiceId, voiceName, voiceStartedAt: startedAt }
+  return { voicePhase: row.phase || '', voiceId, voiceName, voiceStartedAt: startedAt, voiceProgress: row.job_progress ?? null }
 }

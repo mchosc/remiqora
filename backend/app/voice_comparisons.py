@@ -21,6 +21,7 @@ from .config import SEED_VC_DIR
 from .orchestrator.process import tail_log
 from .job_lifecycle import await_cleanup, cancel_and_wait, request_cancel
 from .stems import gpu_lock
+from .gpu_lease import gpu_lease
 from .voice_contracts import (
     VoiceComparisonRequest, VoiceComparisonResponse, VoiceComparisonsResponse,
     VoiceComparisonTrial, VoiceTrialMetrics, VoiceTrialRating, VoiceTrialSource,
@@ -242,7 +243,7 @@ async def _run_trial(job: ComparisonJob, trial: VoiceComparisonTrial, source: Pa
         command.extend(["--checkpoint", str(model.checkpoint)])
     if model.config is not None:
         command.extend(["--config", str(model.config)])
-    async with gpu_lock:
+    async with gpu_lease(gpu_lock, 'voice_conversion', voice._voice_name(job.response.voice_id)):
         code = await voice._spawn(command, cwd=SEED_VC_DIR, log_name=f"trial_{job.response.id}_{trial.id}", slot=slot)
     wavs = list(output.glob("vc_*.wav"))
     if code != 0 or len(wavs) != 1:

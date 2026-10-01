@@ -21,7 +21,7 @@ const job = computed(() => {
     const status = props.voice?.status === 'ready' ? 'done' : buildActive ? props.voice?.status === 'queued' ? 'queued' : 'running' : props.voice?.status ?? 'idle'
     return { kind: 'build' as const, status, progress: build, error: props.voice?.error_code ?? '' }
   }
-  const kind = props.preparation?.error_code === 'source_changed' ? 'preparation' : props.preparation?.operation === 'coverage' ? 'coverage' : prep?.kind ?? 'preparation'
+  const kind: 'preparation' | 'coverage' = props.preparation?.error_code === 'source_changed' ? 'preparation' : props.preparation?.operation === 'coverage' || prep?.kind === 'coverage' ? 'coverage' : 'preparation'
   const status = props.preparation?.status === 'done' ? prep?.status ?? 'done' : props.preparation?.status ?? 'idle'
   return { kind, status, progress: prep, error: props.preparation?.error_code ?? '' }
 })

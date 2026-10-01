@@ -11,6 +11,7 @@ from typing import Callable
 from .config import DEMUCS_DIR, LOG_DIR
 from .job_lifecycle import await_cleanup, kill_process_tree, spawn_process
 from .stems import gpu_lock, separate_file
+from .gpu_lease import gpu_lease
 from .voice_contracts import SeparationQuality, VoiceSeparationOption, VoiceSeparationOptionsResponse
 
 ROFORMER_DIR = Path(os.getenv("VOICE_ROFORMER_DIR", str(Path(__file__).resolve().parents[2] / "external" / "Music-Source-Separation-Training")))
@@ -54,7 +55,8 @@ async def separate_vocal(
     on_proc: Callable[[asyncio.subprocess.Process | None], None] | None = None,
 ) -> Path:
     if quality != "roformer":
-        stems = await separate_file(audio, out_dir, quality=quality, log_name=log_name, on_proc=on_proc, new_session=True)
+        stems = await separate_file(audio, out_dir, quality=quality, log_name=log_name, on_proc=on_proc, new_session=True,
+                                    gpu_reason='voice_preparation', gpu_label=audio.name)
         vocal = stems.get("vocals")
         if vocal is None:
             raise VoiceSeparationError("no_vocal")
@@ -66,7 +68,7 @@ async def separate_vocal(
     required = ("--model_type", "--config_path", "--start_check_point", "--input_folder", "--store_dir", "--pcm_type", "--filename_template")
     if not settings.is_file() or not all(flag in settings.read_text(encoding="utf-8") for flag in required):
         raise VoiceSeparationError("roformer_incompatible")
-    async with gpu_lock:
+    async with gpu_lease(gpu_lock, 'voice_preparation', audio.name):
         inputs = out_dir / "input"
         outputs = out_dir / "output"
         command = [str(roformer_python()), "inference.py", "--model_type", ROFORMER_MODEL_TYPE, "--config_path", str(ROFORMER_CONFIG.resolve()), "--start_check_point", str(ROFORMER_CHECKPOINT.resolve()), "--input_folder", str(inputs.resolve()), "--store_dir", str(outputs.resolve()), "--pcm_type", "FLOAT", "--filename_template", "{file_name}_{instr}"]

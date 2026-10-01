@@ -5,7 +5,7 @@ import * as tracksApi from '../api/tracks'
 import type { SavedTrack } from '../api/tracks'
 import { applyStatus, applyVoice, cancelVoiceApply, replaceVoice, getActiveVoiceId, VoiceApplyError } from '../api/voices'
 import type { ApplyStatus } from '../api/voices'
-import type { AceJobResponse, JsonObject } from '../api/contracts'
+import type { AceJobResponse, JsonObject, VoiceJobProgress } from '../api/contracts'
 import { isJsonValue, parseAceAdoptRequest } from '../api/contracts'
 import { isObject } from '../api/schemaValidation'
 import { i18n } from '../i18n'
@@ -59,6 +59,7 @@ export interface AceJob {
   voiceId?: string
   voiceName?: string
   voiceStartedAt?: number
+  voiceProgress?: VoiceJobProgress | null
   voiceError?: string
   voiceErrorCode?: string
   voiceStates?: Record<number, ApplyStatus>
@@ -136,6 +137,7 @@ function applyVoiceStates(job: AceJob, rows: Array<{ trackId: number; row: Apply
     job.voiceId = selected.voice_id || job.voiceId
     job.voiceName = selected.voice_name || job.voiceName
     job.voicePhase = selected.phase || ''
+    job.voiceProgress = selected.job_progress ?? null
     job.voiceStartedAt = selected.started_at ? selected.started_at * 1000 : job.voiceStartedAt
     job.voiceError = selected.error
     job.voiceErrorCode = replacement && selected.status === 'idle' ? selected.error_code || 'interrupted' : selected.error_code

@@ -10,14 +10,15 @@ from .contracts import Contract
 SeparationQuality = Literal["fast", "high", "roformer"]
 InputKind = Literal["song", "vocal"]
 VoiceWorkStatus = Literal["idle", "queued", "running", "done", "failed", "cancelled"]
-VoiceProgressPhase = Literal['queued', 'inspecting', 'separating', 'normalizing', 'screening', 'cleaning', 'slicing', 'references', 'coverage', 'assembling', 'merging', 'base_model', 'waiting_gpu', 'training', 'publishing', 'complete']
-VoiceProgressUnit = Literal['files', 'samples', 'steps', 'tasks']
+VoiceProgressPhase = Literal['queued', 'inspecting', 'separating', 'normalizing', 'screening', 'cleaning', 'slicing', 'references', 'coverage', 'assembling', 'merging', 'base_model', 'waiting_gpu', 'training', 'publishing', 'complete', 'preparing', 'loading', 'analyzing', 'converting', 'mixing']
+VoiceProgressUnit = Literal['files', 'samples', 'steps', 'tasks', 'chunks']
+VoiceQueueReason = Literal['', 'voice_training', 'voice_conversion', 'voice_preparation', 'stem_separation', 'video_generation', 'gpu_busy']
 
 
 class VoiceJobProgress(Contract):
     """Persisted wall-clock timing; estimates describe only the current phase."""
     job_id: str = Field(min_length=1, max_length=128)
-    kind: Literal['preparation', 'coverage', 'build']
+    kind: Literal['preparation', 'coverage', 'build', 'apply']
     preparation_revision: str = Field(default='', max_length=128)
     status: Literal['queued', 'running', 'done', 'failed', 'cancelled'] = 'queued'
     queued_at: float = Field(ge=0, allow_inf_nan=False)
@@ -33,6 +34,8 @@ class VoiceJobProgress(Contract):
     files_total: int = Field(default=0, ge=0)
     current_file: str = Field(default='', max_length=255)
     estimated_phase_remaining_sec: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    queue_reason: VoiceQueueReason = ''
+    queue_label: str = Field(default='', max_length=200)
 
     @model_validator(mode='after')
     def valid_progress(self) -> VoiceJobProgress:

@@ -9,12 +9,15 @@ it('uses persisted start/finish times and does not invent a legacy clock', () =>
   expect(voiceElapsedSeconds(progress, 50)).toBe(40)
   expect(voiceElapsedSeconds({ ...progress, status: 'cancelled', finished_at: 40 }, 999)).toBe(30)
   expect(voiceElapsedSeconds({ ...progress, started_at: null, finished_at: 40 }, 999)).toBe(30)
+  expect(voiceElapsedSeconds({ ...progress, status: 'done', finished_at: null }, 999)).toBeNull()
 })
 it('only shows a current-phase measured estimate while it is still useful', () => {
   expect(voicePhaseRemainingSeconds({ ...progress, estimated_phase_remaining_sec: null }, 50)).toBeNull()
   expect(voicePhaseRemainingSeconds(progress, 34)).toBe(390)
   expect(voicePhaseRemainingSeconds(progress, 999)).toBeNull()
   expect(voicePhaseRemainingSeconds({ ...progress, status: 'done', finished_at: 40 }, 50)).toBeNull()
+  expect(voicePhaseRemainingSeconds({ ...progress, estimated_phase_remaining_sec: 30 }, 61)).toBeNull()
+  expect(voicePhaseRemainingSeconds({ ...progress, status: 'queued' }, 34)).toBeNull()
 })
 it('invalidates downstream completion when the saved revision or draft changes', () => {
   const voice: VoiceProfileResponse = { ...voiceProfile(), status: 'ready', usable: true, job_progress: { ...progress, status: 'done', finished_at: 40 } }

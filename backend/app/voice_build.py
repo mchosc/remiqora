@@ -44,6 +44,8 @@ from .config import DATA_DIR, FFMPEG_BIN_DIR, LOG_DIR, SEED_VC_DIR
 from .data_root import place_seed_models
 from .orchestrator.process import tail_log
 from .stems import gpu_lock, separate_file
+from .gpu_lease import gpu_lease, gpu_owner
+from .voice_apply_progress import ApplyLogReader, apply_event
 from .voice_artifacts import ModelArtifact, StoredModel, load_registry, choices, publish, activate
 from .voice_artifacts import resolve_model_artifact as resolve_registered_model
 from .voice_preparation import PreparationDocument
@@ -186,6 +188,7 @@ class ApplyJob:
     work_dir: Path | None = field(default=None, repr=False)
     partial_outputs: set[Path] = field(default_factory=set, repr=False)
     audio_version_id: str | None = None
+    timing: VoiceProgressTracker = field(default_factory=lambda: VoiceProgressTracker.create('apply', ''))
 
 
 _builds: dict[str, BuildJob] = {}
@@ -1215,7 +1218,7 @@ async def _build_inner(job: BuildJob) -> None:
         stop = asyncio.Event()
         watcher = asyncio.create_task(_watch_train(job, stop))
         try:
-            async with gpu_lock:
+            async with gpu_lease(gpu_lock, 'voice_training', _voice_name(job.voice_id)):
                 _check(job)
                 if job.timing is not None:
                     job.timing.phase('training', current=resumed_steps, total=job.training_steps, unit='steps')
@@ -1536,6 +1539,9 @@ def _apply_file(track_id: int) -> Path:
 
 
 def _apply_payload(job: ApplyJob) -> dict:
+    if job.status in _APPLY_ACTIVE and job.phase == 'waiting':
+        owner = gpu_owner(gpu_lock)
+        job.timing.progress.queue_reason, job.timing.progress.queue_label = owner.reason, owner.label
     return {
         "status": job.status,
         "error": job.error,
@@ -1546,10 +1552,13 @@ def _apply_payload(job: ApplyJob) -> dict:
         "started_at": job.started_at,
         "duration_sec": job.duration_sec,
         "audio_version_id": job.audio_version_id,
+        "job_progress": job.timing.progress.model_dump(mode='json'),
     }
 
 
 def _write_apply(job: ApplyJob) -> None:
+    if job.status in {'done', 'failed', 'cancelled'}:
+        job.timing.finish('done' if job.status == 'done' else 'cancelled' if job.status == 'cancelled' else 'failed')
     payload = _apply_payload(job)
     write_object(_apply_file(job.track_id), payload)
     from .audio_versions import sync_application
@@ -1561,7 +1570,42 @@ def record_apply_failure(voice_id: str, track_id: int, code: str) -> None:
     _write_apply(ApplyJob(voice_id=voice_id, track_id=track_id, status="failed", error_code=code))
 
 
-_APPLY_PHASES = {"waiting", "separating", "preparing", "converting", "mixing"}
+_APPLY_PHASES = {"waiting", "separating", "preparing", "loading", "analyzing", "converting", "mixing"}
+
+
+def _apply_phase(job: ApplyJob, phase: Literal['waiting', 'separating', 'preparing', 'loading', 'mixing']) -> None:
+    job.phase = phase
+    if phase == 'waiting':
+        job.status = 'queued'
+        job.timing.progress.status = 'queued'
+        job.timing.phase('waiting_gpu', total=0, unit='tasks')
+    else:
+        job.status = 'running'
+        job.timing.start()
+        job.timing.phase(phase, total=0, unit='tasks')
+    _write_apply(job)
+
+
+async def _watch_apply(job: ApplyJob, log_name: str, stop: asyncio.Event) -> None:
+    reader = ApplyLogReader(LOG_DIR / f'{log_name}.log')
+    while True:
+        changed = False
+        for event in reader.read():
+            if apply_event(job.timing, event):
+                job.phase = event.phase
+                changed = True
+        if changed:
+            _write_apply(job)
+        if stop.is_set():
+            # Drain any final events beyond this bounded read without dropping
+            # them or waiting for another polling interval.
+            if reader.at_end():
+                return
+            continue
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=.5)
+        except TimeoutError:
+            pass
 
 
 def _voice_name(voice_id: object) -> str:
@@ -1589,6 +1633,7 @@ def _number(value: object) -> float:
 def apply_view(payload: dict) -> dict:
     phase = payload.get("phase") or ""
     voice_id = payload.get("voice_id") or ""
+    progress = read_progress(payload.get('job_progress'))
     return {
         "status": payload.get("status") or "idle",
         "error": payload.get("error") or "",
@@ -1599,6 +1644,7 @@ def apply_view(payload: dict) -> dict:
         "voice_name": _voice_name(voice_id),
         "started_at": _number(payload.get("started_at")),
         "duration_sec": _number(payload.get("duration_sec")),
+        "job_progress": progress.model_dump(mode='json') if progress is not None else None,
     }
 
 
@@ -1632,6 +1678,12 @@ def apply_status(track_id: int) -> dict:
             payload["status"] = "failed"
             payload["error_code"] = "interrupted"
             payload["error"] = ""
+            progress = read_progress(payload.get('job_progress'))
+            # The crash time is unknown. Freeze at the last persisted observation
+            # rather than counting the entire offline interval as processing.
+            if progress is not None:
+                finish_progress(progress, 'failed', now=progress.observed_at)
+            payload['job_progress'] = progress.model_dump(mode='json') if progress is not None else None
             try:
                 write_object(path, payload)
             except OSError:
@@ -1743,6 +1795,7 @@ def _apply_paths(row: sqlite3.Row) -> tuple[Path, Path]:
 
 
 async def _apply_inner(job: ApplyJob) -> None:
+    _apply_phase(job, 'preparing')
     voice_path = voice_dir(job.voice_id)
     registry = load_registry(voice_path)
     try:
@@ -1773,9 +1826,7 @@ async def _apply_inner(job: ApplyJob) -> None:
         raise VoiceBuildError(exc.code) from exc
     ensure_whisper_float32_off_cuda()
 
-    job.status = "running"
-    job.phase = "waiting"
-    _write_apply(job)
+    _apply_phase(job, 'waiting')
     work = voices_root() / "_apply" / f"work_{job.track_id}"
     job.work_dir = work
     if work.exists():
@@ -1784,8 +1835,7 @@ async def _apply_inner(job: ApplyJob) -> None:
     def _track_separate(proc: asyncio.subprocess.Process | None) -> None:
         job.slot.track(proc)
         if proc is not None:
-            job.phase = "separating"
-            _write_apply(job)
+            _apply_phase(job, 'separating')
 
     stems = await separate_file(
         audio,
@@ -1801,8 +1851,7 @@ async def _apply_inner(job: ApplyJob) -> None:
         raise VoiceBuildError("no_stems")
     converted = work / "converted"
     converted.mkdir(parents=True)
-    job.phase = "preparing"
-    _write_apply(job)
+    _apply_phase(job, 'preparing')
     # A published reference is already a reviewed contiguous <=10s window.
     # Legacy voices keep their prior reference-selection behavior.
     target_ref = reference if registry.models else await ensure_target_reference(voice_path, reference, job.slot, lambda: job.cancel)
@@ -1825,24 +1874,28 @@ async def _apply_inner(job: ApplyJob) -> None:
     ]
     if checkpoint and config:
         command.extend(["--checkpoint", str(checkpoint), "--config", str(config)])
-    job.phase = "waiting"
-    _write_apply(job)
-    async with gpu_lock:
+    _apply_phase(job, 'waiting')
+    async with gpu_lease(gpu_lock, 'voice_conversion', _voice_name(job.voice_id)):
         _check(job)
-        job.phase = "converting"
-        _write_apply(job)
-        code = await _spawn(
-            command,
-            cwd=SEED_VC_DIR,
-            log_name=log_name,
-            slot=job.slot,
-        )
+        _apply_phase(job, 'loading')
+        # Retry logs are replaced before the watcher reads, so an earlier
+        # attempt cannot supply this attempt's progress.
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (LOG_DIR / f'{log_name}.log').write_text('', encoding='utf-8')
+        stop = asyncio.Event()
+        watcher = asyncio.create_task(_watch_apply(job, log_name, stop))
+        try:
+            code = await _spawn(command, cwd=SEED_VC_DIR, log_name=log_name, slot=job.slot)
+        finally:
+            stop.set()
+            await await_cleanup(watcher)
     _check(job)
     if code != 0:
         raise VoiceBuildError("convert_failed", _failure_detail(log_name))
     wavs = sorted(converted.glob("vc_*.wav"))
     if not wavs:
         raise VoiceBuildError("convert_failed", _failure_detail(log_name))
+    _apply_phase(job, 'mixing')
     expected_seconds = await _probe_duration(stems['vocals'])
     if not math.isfinite(expected_seconds) or expected_seconds <= 0:
         raise VoiceBuildError('invalid_audio')
@@ -1859,8 +1912,6 @@ async def _apply_inner(job: ApplyJob) -> None:
     dest = destination
     partial = partial_wav(dest)
     job.partial_outputs.add(partial)
-    job.phase = "mixing"
-    _write_apply(job)
     await _ffmpeg(
         [
             "-y",
@@ -1885,6 +1936,7 @@ async def _apply_inner(job: ApplyJob) -> None:
     job.audio_url = f"/api/tracks/{job.track_id}/audio?v={int(dest.stat().st_mtime)}"
     job.status = "done"
     job.phase = ""
+    job.timing.phase('complete', total=1, current=1, unit='tasks')
     job.error = ""
     job.error_code = ""
     _write_apply(job)
@@ -1988,10 +2040,10 @@ def start_apply(voice_id: str, track_id: int, *, audio_version_id: str | None = 
     job = ApplyJob(
         voice_id=voice_id,
         track_id=track_id,
-        started_at=datetime.now(timezone.utc).timestamp(),
         duration_sec=float(row["duration_ms"] or 0) / 1000,
         audio_version_id=audio_version_id,
     )
+    job.started_at = job.timing.progress.queued_at
     _applies[track_id] = job
     try:
         _write_apply(job)

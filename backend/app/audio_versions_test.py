@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from app import audio_versions, db, voice_build
 from app.audio_version_contracts import AudioVersion, CreateAudioVersionRequest
 from app.api import routes_audio_versions, routes_tracks
+from app.gpu_lease import gpu_lease
+from app.voice_progress import VoiceProgressTracker
 
 
 class AudioVersionContractTests(unittest.TestCase):
@@ -55,6 +57,95 @@ class AudioVersionsTests(unittest.IsolatedAsyncioTestCase):
         await voice_build.shutdown()
         if db._db is not None:
             db._db.close()
+
+    async def test_progress_follows_actual_holder_and_freezes_after_cancellation(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def wait(job: voice_build.ApplyJob) -> None:
+            voice_build._apply_phase(job, 'waiting')
+            entered.set()
+            await release.wait()
+        lock = asyncio.Lock()
+        with patch.object(voice_build, 'gpu_lock', lock), patch.object(voice_build, '_apply_inner', side_effect=wait):
+            async with gpu_lease(lock, 'voice_training', 'Training Singer'):
+                version = audio_versions.start_version(self.track_id, self.voice_id)
+                await asyncio.wait_for(entered.wait(), timeout=3)
+                progress = audio_versions.list_versions(self.track_id).versions[-1].job_progress
+                self.assertIsNotNone(progress)
+                if progress is not None:
+                    self.assertEqual(progress.phase, 'waiting_gpu')
+                    self.assertEqual(progress.queue_reason, 'voice_training')
+                    self.assertEqual(progress.queue_label, 'Training Singer')
+                    self.assertIsNone(progress.estimated_phase_remaining_sec)
+            async with gpu_lease(lock, 'voice_conversion', 'Other Track'):
+                progress = audio_versions.list_versions(self.track_id).versions[-1].job_progress
+                if progress is not None:
+                    self.assertEqual(progress.queue_reason, 'voice_conversion')
+                    self.assertEqual(progress.queue_label, 'Other Track')
+            cancelled = await audio_versions.cancel_version(self.track_id, version.id)
+        progress = cancelled.job_progress
+        self.assertIsNotNone(progress)
+        if progress is not None:
+            self.assertEqual(progress.status, 'cancelled')
+            self.assertEqual(progress.queue_reason, '')
+            self.assertIsNotNone(progress.finished_at)
+            reloaded = audio_versions.list_versions(self.track_id).versions[-1].job_progress
+            self.assertEqual(reloaded, progress)
+
+    async def test_retry_creates_new_timing_and_different_job_identity(self) -> None:
+        entered = asyncio.Event()
+        async def wait(job: voice_build.ApplyJob) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+        with patch.object(voice_build, '_apply_inner', side_effect=wait):
+            version = audio_versions.start_version(self.track_id, self.voice_id)
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            cancelled = await audio_versions.cancel_version(self.track_id, version.id)
+            entered.clear()
+            retried = await audio_versions.retry_version(self.track_id, version.id)
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            self.assertIsNotNone(cancelled.job_progress)
+            self.assertIsNotNone(retried.job_progress)
+            if cancelled.job_progress is not None and retried.job_progress is not None:
+                self.assertNotEqual(cancelled.job_progress.job_id, retried.job_progress.job_id)
+                self.assertIsNone(retried.job_progress.finished_at)
+                self.assertGreaterEqual(retried.job_progress.queued_at, cancelled.job_progress.queued_at)
+
+    async def test_interrupted_receipt_freezes_once_and_wrong_version_progress_is_hidden(self) -> None:
+        entered = asyncio.Event()
+        async def wait(job: voice_build.ApplyJob) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+        with patch.object(voice_build, '_apply_inner', side_effect=wait):
+            version = audio_versions.start_version(self.track_id, self.voice_id)
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            worker = next(iter(voice_build._applies))
+            await audio_versions.cancel_version(self.track_id, version.id)
+        progress = VoiceProgressTracker.create('apply', '', now=10)
+        progress.start(now=11)
+        progress.phase('converting', total=8, unit='chunks', current=3, now=12)
+        from app.atomic_files import write_object
+        receipt = voice_build._apply_file(worker)
+        write_object(receipt, {'status': 'running', 'voice_id': self.voice_id, 'audio_version_id': version.id,
+                               'job_progress': progress.progress.model_dump(mode='json')})
+        from app import audio_version_store
+        audio_version_store.set_state(db.get_db(), version.id, 'running', '')
+        recovered = audio_versions.list_versions(self.track_id).versions[-1]
+        self.assertEqual(recovered.status, 'failed')
+        self.assertEqual(recovered.error_code, 'interrupted')
+        self.assertIsNotNone(recovered.job_progress)
+        if recovered.job_progress is not None:
+            self.assertEqual(recovered.job_progress.status, 'failed')
+            self.assertEqual(recovered.job_progress.finished_at, 12, 'Unknown offline time was counted as processing')
+            self.assertEqual(audio_versions.list_versions(self.track_id).versions[-1].job_progress, recovered.job_progress)
+        write_object(receipt, {'status': 'done', 'audio_version_id': 'c' * 32,
+                               'job_progress': progress.progress.model_dump(mode='json')})
+        self.assertIsNone(audio_versions.list_versions(self.track_id).versions[-1].job_progress)
+
+    async def test_legacy_or_damaged_optional_progress_keeps_status_without_inventing_timing(self) -> None:
+        for optional in [None, {'queued_at': 'bad'}]:
+            receipt = audio_versions._ApplyReceipt.model_validate({'status': 'done', 'job_progress': optional})
+            self.assertEqual(receipt.status, 'done')
+            self.assertIsNone(receipt.job_progress)
 
     async def test_original_snapshot_survives_default_path_changes(self) -> None:
         versions = audio_versions

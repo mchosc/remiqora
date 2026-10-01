@@ -9,7 +9,7 @@ import * as aceApi from '../api/aceStep'
 import * as orchestratorApi from '../api/orchestrator'
 import type { OrchestratorStatus } from '../types'
 import * as tracksApi from '../api/tracks'
-import type { AceJobResponse, SavedTrack } from '../api/contracts'
+import type { AceJobResponse, SavedTrack, VoiceJobProgress } from '../api/contracts'
 import { getActiveVoiceId, applyStatus, waitForVoiceApply } from '../api/voices'
 import { useLoraTrainingStore } from './loraTraining'
 import * as trainingApi from '../api/aceStepTraining'
@@ -60,6 +60,7 @@ describe('job cancellation', () => {
 
 const saved: SavedTrack = { id: 17, short_id: 4, model: 'ace_step', created_at: '2026-10-01T10:00:00Z', title: 'Saved', lyrics: '', seed: null, duration_ms: 10_000, wall_ms: null, params: {}, filename: 'saved.wav', audio_url: '/api/tracks/17/audio', abc_url: null, stems: null, midi: null }
 const completed: AceJobResponse = { task_id: 'task-1', status: 'done', created_at: saved.created_at, title: 'Batch', lyrics: '', audio_format: 'wav', batch_size: 2, params: {}, progress: 1, stage: 'saved', error: '', error_code: '', tracks: [saved], voice_id: null }
+const voiceProgress: VoiceJobProgress = { job_id: 'apply-17', kind: 'apply', status: 'queued', queued_at: 100, observed_at: 200, phase: 'waiting_gpu', queue_reason: 'voice_training', queue_label: 'SackJo22' }
 
 describe('backend ACE ownership', () => {
   it('adopts old browser-owned jobs once before discarding their local records', async () => {
@@ -185,6 +186,31 @@ describe('backend ACE ownership', () => {
 })
 
 describe('background poll lifecycle', () => {
+  it('preserves measured queued progress through initial ACE and YuE2 history hydration', async () => {
+    vi.mocked(aceApi.listJobs).mockResolvedValue([{ ...completed, voice_id: 'captured-voice' }])
+    vi.mocked(tracksApi.listTracks).mockResolvedValue([saved])
+    vi.mocked(applyStatus).mockResolvedValue({ status: 'queued', phase: 'waiting', error: '', error_code: '', audio_url: '', job_progress: voiceProgress })
+    const ace = useAceStepStore(); await ace.loadHistory()
+    expect(ace.jobs[0]?.voiceProgress).toEqual(voiceProgress)
+    vi.mocked(tracksApi.listTracks).mockResolvedValue([{ ...saved, model: 'yue2' }])
+    const observation = deferred<string>(); vi.mocked(waitForVoiceApply).mockReturnValue(observation.promise)
+    const yue = useYue2Store(); await yue.loadHistory()
+    expect(yue.jobs[0]?.voiceProgress).toEqual(voiceProgress)
+    yue.stopBackgroundTasks(); ace.stopBackgroundTasks(); observation.resolve('/done.wav')
+  })
+  it('retains the measured terminal receipt after YuE2 voice polling resolves its audio URL', async () => {
+    const store = useYue2Store()
+    store.jobs = [{ id: 'saved_17', status: 'done', createdAt: 100, style: 'Title', lyrics: '', cot: 'off', precision: 'q8_0', seed: 1, finalized: true, dbId: 17, voiceApply: 'running' }]
+    const terminal = { ...voiceProgress, status: 'done', phase: 'complete', finished_at: 250 } satisfies VoiceJobProgress
+    vi.mocked(waitForVoiceApply).mockImplementation(async (_trackId, onUpdate) => {
+      onUpdate?.({ status: 'done', phase: 'mixing', error: '', error_code: '', audio_url: '/done.wav', job_progress: terminal })
+      return '/done.wav'
+    })
+    store._followVoice(store.jobs[0]); await vi.advanceTimersByTimeAsync(0)
+    expect(store.jobs[0]?.voiceProgress).toEqual(terminal)
+    expect(store.jobs[0]?.voiceApply).toBe('done')
+    store.stopBackgroundTasks()
+  })
   it('does not replace YuE2 history or launch voice observers after teardown during a history request', async () => {
     const response = deferred<SavedTrack[]>()
     vi.mocked(tracksApi.listTracks).mockReturnValue(response.promise)

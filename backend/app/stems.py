@@ -8,9 +8,9 @@ Runs alongside whatever model (if any) is currently active, rather than
 stopping it first: measured peak VRAM for a real separation is only ~1GB
 above baseline (htdemucs is a small model), which comfortably coexists with
 ACE-Step/YuE2 on this card - no need to evict the active model for this.
-`_gpu_lock` below only serializes multiple *Demucs* jobs against each other
-(so two simultaneous separations don't thrash the GPU scheduling each
-other), independent of orchestrator.manager's model-switching lock.
+The shared GPU lock serializes separation, voice training/conversion and video
+generation. It remains independent of orchestrator.manager's model-switching
+lock; owner labels describe the actual holder without changing that ordering.
 """
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ from . import db
 from .config import DEMUCS_DIR, FFMPEG_BIN_DIR, LOG_DIR
 from .orchestrator.process import tail_log
 from .job_lifecycle import await_cleanup, cancel_and_wait, kill_process_tree, request_cancel, spawn_process
+from .gpu_lease import gpu_lease
+from .voice_contracts import VoiceQueueReason
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +128,11 @@ async def separate_file(
     new_session: bool = False,
     quality: Literal["fast", "high"] = "fast",
     spawn: SpawnProcess | None = None,
+    gpu_reason: VoiceQueueReason = 'stem_separation',
+    gpu_label: str = '',
 ) -> dict[str, Path]:
     """Split audio while holding gpu_lock; a caller may own worker creation."""
-    async with gpu_lock:
+    async with gpu_lease(gpu_lock, gpu_reason, gpu_label or audio.name):
         shutil.rmtree(out_dir, ignore_errors=True)
         out_dir.mkdir(parents=True, exist_ok=True)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -205,7 +209,7 @@ async def _run(track_id: int) -> None:
     log_name = f"demucs_{track_id}"
     out_dir: Path | None = None
     try:
-        async with _gpu_lock:
+        async with gpu_lease(_gpu_lock, 'stem_separation', f'Track {track_id}'):
             if job.cancel_requested:
                 job.status = "cancelled"
                 return

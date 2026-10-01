@@ -52,6 +52,24 @@ class VoiceProgressTests(unittest.TestCase):
         self.assertIsNone(read_progress(None))
         self.assertIsNone(read_progress({'queued_at': 'invented'}))
 
+    def test_cleanup_terminal_status_changes_without_restarting_finished_clock(self) -> None:
+        tracker = VoiceProgressTracker.create('apply', '', now=10)
+        tracker.start(now=11)
+        tracker.phase('converting', total=8, unit='chunks', now=12)
+        tracker.finish('failed', now=15)
+        tracker.progress.queue_reason = 'gpu_busy'
+        tracker.progress.queue_label = 'Waiting'
+        tracker.progress.estimated_phase_remaining_sec = 90
+        tracker.finish('cancelled', now=99)
+        self.assertEqual(tracker.progress.status, 'cancelled')
+        self.assertEqual(tracker.progress.finished_at, 15)
+        self.assertEqual(tracker.progress.queue_reason, '')
+        self.assertEqual(tracker.progress.queue_label, '')
+        self.assertIsNone(tracker.progress.estimated_phase_remaining_sec)
+        tracker.finish('failed', now=120)
+        self.assertEqual(tracker.progress.status, 'failed')
+        self.assertEqual(tracker.progress.finished_at, 15)
+
 
 if __name__ == '__main__':
     unittest.main()

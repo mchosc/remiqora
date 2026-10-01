@@ -7,6 +7,12 @@ export const trackAudioEn = {
   format: 'Export format', export: 'Create export', settings: 'Encoding settings',
   exportHint: 'Exports use the saved settings when they start. Changing quality cannot restore detail lost in the source.',
   compression: 'Compression {level}', retry: 'Retry', mono: 'Mono', stereo: 'Stereo',
+  progress: {
+    elapsed: 'Elapsed: {time}', remaining: 'Current stage remaining', measuring: 'Measuring…', waitingEstimate: 'Available once this stage starts', stageProgress: 'Current voice conversion stage progress', cancelVoice: 'Cancel voice conversion for {name}',
+    phase: { preparing: 'Preparing audio', separating: 'Separating vocals and instruments', loading: 'Loading the voice model', analyzing: 'Analyzing vocals', converting: 'Converting voice', mixing: 'Mixing and saving audio', complete: 'Voice conversion complete' },
+    queue: { queued: 'Waiting to start voice conversion', voice_training: 'Waiting for voice training', voice_conversion: 'Waiting for another voice conversion', voice_preparation: 'Waiting for voice preparation', stem_separation: 'Waiting for stem separation', video_generation: 'Waiting for video generation', gpu_busy: 'Waiting for the GPU' },
+    count: { chunks: '{current} / {total} audio sections', files: '{current} / {total} files', samples: '{current} / {total} samples', steps: '{current} / {total} steps', tasks: '{current} / {total} tasks' },
+  },
   errors: {
     unknown: 'Could not complete this audio action. Refresh and try again.',
     original_audio_missing: 'The original audio is unavailable. Another voice cannot be created safely.',
@@ -31,6 +37,12 @@ export const trackAudioRu = {
   format: 'Формат экспорта', export: 'Создать экспорт', settings: 'Настройки кодирования',
   exportHint: 'Экспорт использует настройки на момент запуска. Повышение качества не восстановит утраченные детали исходника.',
   compression: 'Сжатие {level}', retry: 'Повторить', mono: 'Моно', stereo: 'Стерео',
+  progress: {
+    elapsed: 'Прошло: {time}', remaining: 'Осталось на текущий этап', measuring: 'Измеряем…', waitingEstimate: 'Оценка появится после начала этапа', stageProgress: 'Прогресс текущего этапа замены голоса', cancelVoice: 'Отменить замену голоса на {name}',
+    phase: { preparing: 'Подготовка аудио', separating: 'Разделение вокала и инструментов', loading: 'Загрузка модели голоса', analyzing: 'Анализ вокала', converting: 'Замена голоса', mixing: 'Сведение и сохранение аудио', complete: 'Замена голоса завершена' },
+    queue: { queued: 'Ожидание начала замены голоса', voice_training: 'Ожидание обучения голоса', voice_conversion: 'Ожидание замены голоса', voice_preparation: 'Ожидание подготовки голоса', stem_separation: 'Ожидание разделения стемов', video_generation: 'Ожидание генерации видео', gpu_busy: 'Ожидание GPU' },
+    count: { chunks: '{current} / {total} фрагментов аудио', files: '{current} / {total} файлов', samples: '{current} / {total} образцов', steps: '{current} / {total} шагов', tasks: '{current} / {total} задач' },
+  },
   errors: {
     unknown: 'Не удалось выполнить действие с аудио. Обновите и повторите.',
     original_audio_missing: 'Оригинал недоступен. Без него безопасно создать другой голос нельзя.',

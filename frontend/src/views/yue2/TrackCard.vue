@@ -22,12 +22,7 @@ const showDetails = ref(false)
 const rowOpen = ref(false)
 const showBody = computed(() => props.view === 'cards' || rowOpen.value)
 const voiceRunning = computed(() => props.job.voiceApply === 'running')
-const shownStatus = computed(() => (voiceRunning.value ? 'running' : props.job.status))
-const voiceDurationSec = computed(() => {
-  if (props.job.durationSec && props.job.durationSec > 0) return props.job.durationSec
-  const requested = Number(props.job.params?.audio_duration)
-  return Number.isFinite(requested) && requested > 0 ? requested : null
-})
+const shownStatus = computed(() => voiceRunning.value ? props.job.voiceProgress?.status === 'queued' ? 'queued' : 'running' : props.job.status)
 
 const summary = computed(() => {
   const bits: string[] = []
@@ -132,12 +127,11 @@ function copyParamsToForm() {
     </button>
     <div v-if="view === 'list' && job.dbId != null" class="px-3 pb-2"><FavoriteTrackButton :track-id="job.dbId" :label="job.style || t('yueTrack.noStyle')" /></div>
     <VoiceApplyStatus
-      v-if="voiceRunning && view === 'list'"
+      v-if="voiceRunning && view === 'list' && !showBody"
       class="px-3 pb-2"
       :phase="job.voicePhase"
       :voice-name="job.voiceName"
-      :started-at="job.voiceStartedAt"
-      :duration-sec="voiceDurationSec"
+      :job-progress="job.voiceProgress"
     />
     <div v-if="showBody" :class="view === 'list' ? 'space-y-3 px-3 pb-3' : 'contents'">
     <div v-if="view === 'cards'" class="flex items-start justify-between gap-3">
@@ -155,21 +149,20 @@ function copyParamsToForm() {
       </div>
       <div class="flex shrink-0 items-center gap-2">
         <FavoriteTrackButton v-if="job.dbId != null" :track-id="job.dbId" :label="job.style || t('yueTrack.noStyle')" />
-        <StatusBadge :status="shownStatus" :label="voiceRunning ? t('voiceClone.applyingBadge') : undefined" />
+        <StatusBadge :status="shownStatus" :label="voiceRunning && shownStatus !== 'queued' ? t('voiceClone.applyingBadge') : undefined" />
         <button v-if="!voiceRunning && (job.status === 'queued' || job.status === 'running')" type="button" class="text-text-dim hover:text-status-failed" :title="t('aceJob.cancel')" @click="cancel">⏹</button>
         <button v-else type="button" class="text-text-dim hover:text-status-failed" :title="t('aceJob.delete')" @click="remove">✕</button>
       </div>
     </div>
 
     <VoiceApplyStatus
-      v-if="voiceRunning && view === 'cards'"
+      v-if="voiceRunning && view === 'cards' && job.dbId == null"
       :phase="job.voicePhase"
       :voice-name="job.voiceName"
-      :started-at="job.voiceStartedAt"
-      :duration-sec="voiceDurationSec"
+      :job-progress="job.voiceProgress"
     />
 
-    <div v-else-if="job.status === 'queued' || job.status === 'running'" class="space-y-1">
+    <div v-else-if="!voiceRunning && (job.status === 'queued' || job.status === 'running')" class="space-y-1">
       <div class="h-2 w-full overflow-hidden rounded-full bg-panel-2">
         <div class="h-full w-3/5 accent-gradient animate-pulse"></div>
       </div>

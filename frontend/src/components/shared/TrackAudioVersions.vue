@@ -9,6 +9,7 @@ import type { AudioVersion, AudioExportResponse } from '../../api/contracts'
 import { createPollingLoop } from '../../composables/polling'
 import WaveformPlayer from './WaveformPlayer.vue'
 import StatusBadge from './StatusBadge.vue'
+import VoiceApplyStatus from './VoiceApplyStatus.vue'
 const props = defineProps<{ trackId: number; fallbackAudioUrl?: string | null; fallbackFilename?: string | null; voiceApplying?: boolean }>()
 const { t, te } = useI18n()
 const versions = ref<AudioVersion[]>([])
@@ -38,7 +39,18 @@ const playbackFormat = computed(() => playback.value?.export?.format.toUpperCase
 const playbackLabel = computed(() => [playback.value ? label(playback.value.version) : '', playbackFormat.value].filter(Boolean).join(' · '))
 const readyVoices = computed(() => voices.value.filter(item => item.usable))
 const active = (status: string) => status === 'queued' || status === 'running'
+const visibleVoiceJobs = computed(() => versions.value.filter(item => item.kind === 'voice' && (active(item.status) || item.id === selectedId.value && item.job_progress)))
 function label(version: AudioVersion) { return version.kind === 'original' ? t('trackAudio.original') : version.voice_name || t('trackAudio.unknownVoice') }
+function statusLabel(version: AudioVersion): string {
+  const progress = version.job_progress
+  if (progress && active(version.status)) {
+    const key = progress.status === 'queued' || progress.phase === 'waiting_gpu' || progress.phase === 'queued'
+      ? `trackAudio.progress.queue.${progress.queue_reason || (progress.phase === 'waiting_gpu' ? 'gpu_busy' : 'queued')}`
+      : `trackAudio.progress.phase.${progress.phase ?? ''}`
+    if (te(key)) return t(key)
+  }
+  return t(`jobStatus.${version.status}`)
+}
 function nativeFormat(filename?: string | null, url?: string | null): string | undefined {
   const path = (filename || url || '').split(/[?#]/, 1)[0] ?? ''
   return /\.([a-z0-9]{1,8})$/i.exec(path)?.[1]?.toUpperCase()
@@ -224,13 +236,17 @@ onBeforeUnmount(() => { disposed = true; session++; playbackRequest++; poll.stop
     <div class="flex flex-wrap items-center gap-2">
       <span class="text-xs font-medium text-text-dim">{{ t('trackAudio.title') }}</span>
       <button v-for="version in versions" :key="version.id" type="button" :aria-pressed="selectedId === version.id" :disabled="pending" class="rounded-lg border border-border px-3 py-1 text-xs disabled:opacity-50" :class="selectedId === version.id ? 'bg-accent/20 text-accent1' : 'bg-panel-2 text-text-dim'" @click="choose(version)">
-        {{ label(version) }}<span v-if="version.status !== 'done'"> · {{ t(`jobStatus.${version.status}`) }}</span>
+        {{ label(version) }}<span v-if="version.status !== 'done'"> · {{ statusLabel(version) }}</span>
       </button>
       <button type="button" :disabled="pending || loading" class="ml-auto text-xs text-accent1 hover:underline disabled:opacity-50" @click="refresh">{{ t('trackAudio.refresh') }}</button>
     </div>
     <p v-if="loading && !loaded" class="text-xs text-text-dim">{{ t('common.loading') }}</p>
     <p v-if="error" role="alert" class="text-xs text-status-failed">{{ error }}</p>
     <p v-if="loaded && !originalAvailable" class="text-xs text-text-dim">{{ t('trackAudio.originalMissing') }}</p>
+    <div v-for="version in visibleVoiceJobs" :key="`progress-${version.id}`" class="space-y-2 rounded-lg border border-border bg-panel-2 p-3" :data-voice-version-progress="version.id">
+      <VoiceApplyStatus :voice-name="label(version)" :phase="version.status === 'queued' ? 'queued' : undefined" :job-progress="version.job_progress" />
+      <button v-if="active(version.status)" type="button" :disabled="pending" :aria-label="t('trackAudio.progress.cancelVoice', { name: label(version) })" class="text-xs text-accent1 hover:underline disabled:opacity-50" @click="versionAction(version, 'cancel')">{{ t('common.cancel') }}</button>
+    </div>
     <div v-if="selected?.status === 'done' && selected.audio_url" role="group" :aria-label="t('trackAudio.playbackFormat')" class="flex flex-wrap items-center gap-2">
       <span class="text-xs text-text-dim">{{ t('trackAudio.playbackFormat') }}</span>
       <button type="button" :aria-pressed="playback?.version.id === selected.id && !playback.export" :disabled="pending" class="rounded-lg border border-border px-3 py-1 text-xs disabled:opacity-50" :class="playback?.version.id === selected.id && !playback.export ? 'bg-accent/20 text-accent1' : 'bg-panel-2 text-text-dim'" @click="playFile(selected)">{{ sourceLabel(selected) }}</button>
@@ -239,11 +255,10 @@ onBeforeUnmount(() => { disposed = true; session++; playbackRequest++; poll.stop
     <p v-if="playable" class="text-xs text-text-dim">{{ t('trackAudio.selectedAudio', { selection: playbackLabel }) }}</p>
     <WaveformPlayer v-if="playable" ref="player" :src="playable" />
     <a v-if="playable" :href="playable" :download="playbackFilename ?? ''" class="inline-block text-xs text-accent1 hover:underline">{{ t('trackAudio.downloadSelected', { format: playbackFormat }) }}</a>
-    <div v-if="selected && selected.status !== 'done'" class="flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
+    <div v-if="selected && selected.status !== 'done' && !active(selected.status)" class="flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
       <StatusBadge :status="selected.status" />
       <span v-if="selected.error_code" class="text-status-failed">{{ te(`trackAudio.errors.${selected.error_code}`) ? t(`trackAudio.errors.${selected.error_code}`) : t('trackAudio.errors.unknown') }}</span>
-      <button v-if="active(selected.status)" type="button" :disabled="pending" class="text-accent1 hover:underline disabled:opacity-50" @click="versionAction(selected, 'cancel')">{{ t('common.cancel') }}</button>
-      <button v-else-if="selected.kind === 'voice' && selected.voice_id" type="button" :disabled="pending" class="text-accent1 hover:underline disabled:opacity-50" @click="versionAction(selected, 'retry')">{{ t('trackAudio.retry') }}</button>
+      <button v-if="selected.kind === 'voice' && selected.voice_id" type="button" :disabled="pending" class="text-accent1 hover:underline disabled:opacity-50" @click="versionAction(selected, 'retry')">{{ t('trackAudio.retry') }}</button>
     </div>
     <details class="rounded-lg border border-border bg-panel-2 p-2">
       <summary class="cursor-pointer text-xs font-medium text-text">{{ t('trackAudio.manage') }}</summary>

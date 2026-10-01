@@ -3,6 +3,9 @@
 No models are imported. All source changes are validated before writing any
 file. Invoke after setup and before training/inference so fresh clones also get
 these fixes. A different upstream implementation requires a reviewed patch.
+
+Inspected vendor source excerpts retain Seed-VC's GPL version 3 license;
+see fixtures/README.md and fixtures/COPYING.seed-vc for provenance and terms.
 """
 from __future__ import annotations
 
@@ -117,6 +120,107 @@ _STATE_METHOD = '''    def _save_training_state(self):
             torch.save(state, os.path.join(self.log_dir, f'step_{self.iters}.pth'))
 
 '''
+_PROGRESS_HELPERS = '''def _remiqora_progress(phase, current=0, total=0):
+    import json
+    print("REMIQORA_PROGRESS " + json.dumps({'phase': phase, 'current': current, 'total': total, 'at': time.time()}), flush=True)
+
+def _remiqora_chunk_count(frames, window, overlap):
+    # The first chunk covers window frames; subsequent chunks retain overlap.
+    if window <= overlap or frames <= 0:
+        raise ValueError("invalid_source_window")
+    stride = window - overlap
+    return 1 + (max(0, frames - window) + stride - 1) // stride
+
+'''
+_CONVERSION_LOOP_BEFORE = '''    max_source_window = max_context_window - mel2.size(2)
+    # split source condition (cond) into chunks
+    processed_frames = 0
+    generated_wave_chunks = []
+    # generate chunk by chunk and stream the output
+    while processed_frames < cond.size(1):
+        chunk_cond = cond[:, processed_frames:processed_frames + max_source_window]
+        is_last_chunk = processed_frames + max_source_window >= cond.size(1)
+        cat_condition = torch.cat([prompt_condition, chunk_cond], dim=1)
+        with torch.autocast(device_type=device.type, dtype=torch.float16 if fp16 else torch.float32):
+            # Voice Conversion
+            vc_target = model.cfm.inference(cat_condition,
+                                                       torch.LongTensor([cat_condition.size(1)]).to(mel2.device),
+                                                       mel2, style2, None, diffusion_steps,
+                                                       inference_cfg_rate=inference_cfg_rate)
+            vc_target = vc_target[:, :, mel2.size(-1):]
+        vc_wave = vocoder_fn(vc_target.float()).squeeze()
+        vc_wave = vc_wave[None, :]
+        if processed_frames == 0:
+            if is_last_chunk:
+                output_wave = vc_wave[0].cpu().numpy()
+                generated_wave_chunks.append(output_wave)
+                break
+            output_wave = vc_wave[0, :-overlap_wave_len].cpu().numpy()
+            generated_wave_chunks.append(output_wave)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+        elif is_last_chunk:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0].cpu().numpy(), overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            processed_frames += vc_target.size(2) - overlap_frame_len
+            break
+        else:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0, :-overlap_wave_len].cpu().numpy(),
+                                    overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+'''
+_CONVERSION_LOOP_AFTER = '''    max_source_window = max_context_window - mel2.size(2)
+    _remiqora_total_chunks = _remiqora_chunk_count(cond.size(1), max_source_window, overlap_frame_len)
+    _remiqora_completed_chunks = 0
+    _remiqora_progress('converting', 0, _remiqora_total_chunks)
+    # split source condition (cond) into chunks
+    processed_frames = 0
+    generated_wave_chunks = []
+    # generate chunk by chunk and stream the output
+    while processed_frames < cond.size(1):
+        chunk_cond = cond[:, processed_frames:processed_frames + max_source_window]
+        is_last_chunk = processed_frames + max_source_window >= cond.size(1)
+        cat_condition = torch.cat([prompt_condition, chunk_cond], dim=1)
+        with torch.autocast(device_type=device.type, dtype=torch.float16 if fp16 else torch.float32):
+            # Voice Conversion
+            vc_target = model.cfm.inference(cat_condition,
+                                                       torch.LongTensor([cat_condition.size(1)]).to(mel2.device),
+                                                       mel2, style2, None, diffusion_steps,
+                                                       inference_cfg_rate=inference_cfg_rate)
+            vc_target = vc_target[:, :, mel2.size(-1):]
+        vc_wave = vocoder_fn(vc_target.float()).squeeze()
+        vc_wave = vc_wave[None, :]
+        if processed_frames == 0:
+            if is_last_chunk:
+                output_wave = vc_wave[0].cpu().numpy()
+                generated_wave_chunks.append(output_wave)
+                _remiqora_completed_chunks += 1
+                _remiqora_progress('converting', _remiqora_completed_chunks, _remiqora_total_chunks)
+                break
+            output_wave = vc_wave[0, :-overlap_wave_len].cpu().numpy()
+            generated_wave_chunks.append(output_wave)
+            _remiqora_completed_chunks += 1
+            _remiqora_progress('converting', _remiqora_completed_chunks, _remiqora_total_chunks)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+        elif is_last_chunk:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0].cpu().numpy(), overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            _remiqora_completed_chunks += 1
+            _remiqora_progress('converting', _remiqora_completed_chunks, _remiqora_total_chunks)
+            processed_frames += vc_target.size(2) - overlap_frame_len
+            break
+        else:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0, :-overlap_wave_len].cpu().numpy(),
+                                    overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            _remiqora_completed_chunks += 1
+            _remiqora_progress('converting', _remiqora_completed_chunks, _remiqora_total_chunks)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+'''
 PATCHES: tuple[SourcePatch, ...] = (
     SourcePatch('modules/length_regulator.py', 'bounded_f0',
                 '''  f0_coarse = f0_coarse * (f0_coarse > 0)
@@ -152,6 +256,13 @@ PATCHES: tuple[SourcePatch, ...] = (
     model, semantic_fn, f0_fn, vocoder_fn, campplus_model, mel_fn, mel_fn_args = load_models(args)'''),
     SourcePatch('inference.py', 'seed_cli', '    parser.add_argument("--fp16", type=str2bool, default=True)',
                 '    parser.add_argument("--fp16", type=str2bool, default=True)\n    parser.add_argument("--seed", type=int, default=42)'),
+    SourcePatch('inference.py', 'progress_helpers', '@torch.no_grad()\ndef main(args):',
+                _PROGRESS_HELPERS + '@torch.no_grad()\ndef main(args):'),
+    SourcePatch('inference.py', 'progress_loading', 'def load_models(args):\n    global fp16',
+                "def load_models(args):\n    _remiqora_progress('loading')\n    global fp16"),
+    SourcePatch('inference.py', 'progress_analyzing', "    sr = mel_fn_args['sampling_rate']",
+                "    _remiqora_progress('analyzing')\n    sr = mel_fn_args['sampling_rate']"),
+    SourcePatch('inference.py', 'progress_chunks', _CONVERSION_LOOP_BEFORE, _CONVERSION_LOOP_AFTER),
 )
 
 

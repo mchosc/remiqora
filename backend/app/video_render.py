@@ -43,6 +43,7 @@ from .job_lifecycle import (
 )
 from .resource_admission import admission_lock, native_work_inflight
 from .stems import gpu_lock
+from .gpu_lease import gpu_lease
 from .video_engine import (
     VideoEngineError,
     ImageReference,
@@ -1029,7 +1030,7 @@ async def _run(
 
         if project.mode == "generated" and operation != "export":
             _job_phase(project_id, "waiting")
-            async with gpu_lock:
+            async with gpu_lease(gpu_lock, 'video_generation', 'Video project'):
                 await render()
         else:
             await render()

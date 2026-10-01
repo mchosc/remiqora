@@ -32,6 +32,7 @@ from .job_lifecycle import (
 )
 from .config import DATA_DIR, FFMPEG_BIN_DIR, LOG_DIR, LTX_DIR
 from .stems import gpu_lock
+from .gpu_lease import gpu_lease
 from .video_projects import atomic_text
 from .video_process import (
     WorkerIdentity,
@@ -1241,7 +1242,7 @@ async def _generate_clip(
     watcher = asyncio.create_task(_watch_video(job, stop))
     try:
         _check(job)
-        async with gpu_lock:
+        async with gpu_lease(gpu_lock, 'video_generation', 'Video generation'):
             _check(job)
             code = await _spawn(
                 argv, cwd=LTX_DIR, log_name=f"video_{job.id}", slot=job.slot

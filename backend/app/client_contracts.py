@@ -160,11 +160,12 @@ class ApplyStatusResponse(Contract):
     error: str
     error_code: str
     audio_url: str
-    phase: Literal["", "waiting", "separating", "preparing", "converting", "mixing"] = ""
+    phase: Literal["", "waiting", "separating", "preparing", "loading", "analyzing", "converting", "mixing"] = ""
     voice_id: str = ""
     voice_name: str = ""
     started_at: float = Field(default=0, ge=0)
     duration_sec: float = Field(default=0, ge=0)
+    job_progress: VoiceJobProgress | None = None
 
 
 class VoiceReplacementResponse(Contract):

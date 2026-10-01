@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from .voice_contracts import VoiceJobProgress, VoiceProgressPhase as ProgressPhase, VoiceProgressUnit as ProgressUnit
 
-ProgressKind = Literal['preparation', 'coverage', 'build']
+ProgressKind = Literal['preparation', 'coverage', 'build', 'apply']
 TerminalStatus = Literal['done', 'failed', 'cancelled']
 
 
@@ -27,13 +27,12 @@ def read_progress(value: object) -> VoiceJobProgress | None:
 def finish_progress(progress: VoiceJobProgress | None, status: TerminalStatus, *, now: float | None = None) -> None:
     if progress is None:
         return
-    if progress.finished_at is not None:
-        return
     stamp = time.time() if now is None else now
     progress.status = status
     if progress.finished_at is None:
         progress.finished_at = max(stamp, progress.started_at or progress.queued_at)
     progress.estimated_phase_remaining_sec = None
+    progress.queue_reason, progress.queue_label = '', ''
 
 
 @dataclass
@@ -64,6 +63,7 @@ class VoiceProgressTracker:
         self.progress.current_file = current_file
         self.progress.phase_started_at, self.progress.observed_at = stamp, stamp
         self.progress.estimated_phase_remaining_sec = None
+        self.progress.queue_reason, self.progress.queue_label = '', ''
         self._anchor_at, self._anchor_current, self._deltas = None, 0, 0
 
     def advance(self, completed: int, *, now: float | None = None) -> None:

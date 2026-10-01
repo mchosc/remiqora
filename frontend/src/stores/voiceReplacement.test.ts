@@ -5,7 +5,7 @@ import { useAceStepStore } from './aceStep'
 import * as voices from '../api/voices'
 import * as ace from '../api/aceStep'
 import * as tracks from '../api/tracks'
-import type { SavedTrack, ApplyStatusResponse, VoiceReplacementResponse } from '../api/contracts'
+import type { SavedTrack, ApplyStatusResponse, VoiceReplacementResponse, VoiceJobProgress } from '../api/contracts'
 
 vi.mock('../api/voices', async (original) => ({ ...await original<typeof import('../api/voices')>(), replaceVoice: vi.fn(), applyVoice: vi.fn(), cancelVoiceApply: vi.fn(), applyStatus: vi.fn() }))
 vi.mock('../api/aceStep', () => ({ listJobs: vi.fn(), releaseTask: vi.fn(), health: vi.fn(), queryResult: vi.fn(), cancelTask: vi.fn(), cancelAllTasks: vi.fn(), deleteJob: vi.fn() }))
@@ -47,6 +47,17 @@ it('exposes converted audio when the submission already completed', async () => 
   vi.mocked(voices.replaceVoice).mockResolvedValue({ track: result, source_track: source, application: done })
   const job = await useAceStepStore().submitVoiceReplacement(file(), voiceId)
   expect(job.voiceApply).toBe('done'); expect(job.audioUrls).toEqual([done.audio_url])
+})
+it('keeps measured replacement progress and replaces its timing on a retry', async () => {
+  const progress: VoiceJobProgress = { job_id: 'apply-41', kind: 'apply', status: 'queued', queued_at: 100, observed_at: 200, phase: 'waiting_gpu', queue_reason: 'voice_training', queue_label: 'SackJo22' }
+  vi.mocked(voices.replaceVoice).mockResolvedValue({ track: result, source_track: source, application: { ...running, status: 'queued', phase: 'waiting', job_progress: progress } })
+  const store = useAceStepStore(); const job = await store.submitVoiceReplacement(file(), voiceId)
+  expect(job.voiceProgress).toEqual(progress)
+  await store.cancelVoiceReplacement(job.id)
+  const retry = { ...progress, job_id: 'retry-41', queued_at: 300, observed_at: 300, queue_reason: '', queue_label: '' } satisfies VoiceJobProgress
+  vi.mocked(voices.applyVoice).mockResolvedValue({ ...running, status: 'queued', phase: 'waiting', job_progress: retry })
+  await store.retryVoiceReplacement(job.id)
+  expect(store.jobs[0]?.voiceProgress).toEqual(retry)
 })
 
 it('loads only tagged result uploads, deduplicates them and restores conversion state', async () => {
