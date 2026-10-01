@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -39,7 +40,10 @@ def atomic_text(destination: Path, content: str) -> None:
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as output:
-            os.fchmod(output.fileno(), mode)
+            if sys.platform == 'win32':
+                temporary.chmod(mode)
+            else:
+                os.fchmod(output.fileno(), mode)
             output.write(content)
             output.flush()
             os.fsync(output.fileno())

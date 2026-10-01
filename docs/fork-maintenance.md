@@ -56,9 +56,10 @@ python backend/scripts/generate_contracts.py --check
 (cd desktop && npm ci --ignore-scripts && npm test)
 ```
 
-Also run the **exact** `python -m mypy --strict --follow-imports=silent …`
-invocation listed in CI, from `backend/`. Its explicit module list is intentional;
-it is not a whole-backend typing claim. Regenerate changed Pydantic contracts with
+Also run the **exact strict-mypy platform loop** listed in CI, from `backend/`.
+It checks Linux, macOS and Windows typing paths; a check using only the local
+platform can miss an error behind a platform guard. Its explicit module list is
+intentional; it is not a whole-backend typing claim. Regenerate changed Pydantic contracts with
 `python backend/scripts/generate_contracts.py`, then rerun the drift check. Never
 hand-edit `frontend/src/api/generated.ts`.
 

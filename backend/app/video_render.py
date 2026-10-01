@@ -1156,7 +1156,7 @@ async def start(
             saved.pending_export = None
 
         result = store.mutate(project_id, reserve, revision=body.revision)
-        if project.mode == "generated" and operation != "export":
+        if needs_gpu:
             _gpu_projects.add(project_id)
         _tasks[project_id] = asyncio.create_task(
             _run(project_id, body, operation, export_settings)

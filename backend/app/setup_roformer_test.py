@@ -37,6 +37,15 @@ class RoformerSetupTests(unittest.TestCase):
         actual = setup.inference_config(original)
         self.assertEqual(actual, original.replace('use_amp: true', 'use_amp: false').replace('inference:\n  batch_size: 4', 'inference:\n  batch_size: 1'))
 
+    def test_atomic_text_works_without_descriptor_permissions_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / '.env'
+            destination.write_text('previous settings')
+            with patch('sys.platform', 'win32'), patch.object(setup.os, 'fchmod', side_effect=AttributeError('Unavailable on Windows'), create=True):
+                setup.atomic_text(destination, 'replacement settings')
+            self.assertEqual(destination.read_text(), 'replacement settings')
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+
     def test_dotenv_update_preserves_unrelated_values_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             env = Path(temporary) / '.env'
