@@ -19,10 +19,6 @@ jobs:
   native-process-windows:
     name: Windows native process ownership
     runs-on: windows-latest
-    env:
-      REMIQORA_CONFIG: ${{ runner.temp }}/remiqora-native/config.json
-      REMIQORA_DATA_DIR: ${{ runner.temp }}/remiqora-native/library
-      SEED_VC_DIR: ${{ runner.temp }}/remiqora-native/engine
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -32,6 +28,10 @@ jobs:
       - name: Verify real Windows job termination and parent death
         run: python -m unittest app.windows_native_test -v
         working-directory: backend
+        env:
+          REMIQORA_CONFIG: ${{ runner.temp }}/remiqora-native/config.json
+          REMIQORA_DATA_DIR: ${{ runner.temp }}/remiqora-native/library
+          SEED_VC_DIR: ${{ runner.temp }}/remiqora-native/engine
 
   desktop:
     name: Desktop (unit tests)
