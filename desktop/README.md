@@ -14,7 +14,7 @@ The shell runs the same FastAPI backend and built Vue UI. First-run setup checks
 | macOS, Apple Silicon | Setup/DMG packaging implemented; fork clean installation and GPU workflows unverified. Upstream reported a manual Mac run. |
 | Linux | Packaging configuration exists; desktop first-run setup reports unsupported. Use the repository’s Linux source scripts. |
 
-The Windows baseline prebuilt engine requires CUDA-capable hardware and driver 580 or newer. Upstream reported roughly 30 GB of downloads and 35 GB on disk; setup asks for 50 GB free. These are historical estimates, not a fork installation benchmark. CPU tests and a successful installer build do not establish GPU or platform support.
+The Windows baseline prebuilt engine requires CUDA-capable hardware and driver 580 or newer. Upstream reported roughly 30 GB of downloads and 35 GB on disk. Setup estimates space from pending components with a 50% staging/cache allowance; completed components do not inflate update progress or space requirements. These are estimates, not a fork installation benchmark. CPU tests and a successful installer build do not establish GPU or platform support.
 
 ## Data folders and existing installations
 
@@ -55,7 +55,7 @@ npm run dist
 
 Outputs live under `desktop/dist/` with `Remiqora-mchosc-*` names. Build macOS packages on macOS. `npm run dist:dir` creates an unpacked application for testing.
 
-The build runs the frontend’s strict type check/build, copies backend sources, frontend assets and the ACE-Step patch into `resources/`, and refuses to package detected `.env`, databases or virtualenvs. It does not bundle model weights. Builds are unsigned and can trigger platform security prompts.
+The build runs the frontend’s strict type check/build, copies backend sources, frontend assets and the ACE-Step/model-download patches into `resources/`, and refuses to package detected `.env`, databases or virtualenvs. Linux `.env.setup` proposals are excluded. It does not bundle model weights. Builds are unsigned and can trigger platform security prompts.
 
 The [Desktop app workflow](../.github/workflows/desktop.yml) requires CI verification before packaging. PR/manual runs keep workflow artifacts; a matching version tag can create a **draft** prerelease with checksums. Publication requires manual review and real platform checks in [fork maintenance](../docs/fork-maintenance.md). There is no promised release date.
 
@@ -73,6 +73,10 @@ The [Desktop app workflow](../.github/workflows/desktop.yml) requires CI verific
 
 Pinned component versions and hashes are in [manifest.json](manifest.json). Verified downloads support resume/retry; `state.json` records completed versions and existing files. When changing a pin, inspect the publisher’s release/source and update its URL, digest and size as applicable, then run the downloader/setup regressions. Model and engine licenses remain separate from this repository’s [MIT license](../LICENSE); preserve upstream attribution.
 
+ACE source upgrades stage and patch a replacement before promotion. Interrupted swaps recover `checkpoints`; if both trees contain checkpoints, both remain. Conflicts are retained in `engines/ACE-Step-1.5.previous`, or `ACE-Step-1.5.preserved-*` across later upgrades. Review those directories manually before removing them. The installed source version includes the full pinned commit and patch SHA256.
+
+The local `model-manager-resume` update applies [yue-model-resume.patch](../external/patches/yue-model-resume.patch) to the release’s Python downloader. It saves remote content identity, validates SHA256 or Git blob SHA1, serializes writers, and keeps failed/cancelled staging directories compatible with `clean-partial`. Unknown digests are rejected rather than accepting file length as verification. Disk/writability checks run inside the installer, including offline local updates. Changing the document version query after upgrades retains the backend origin and browser storage.
+
 ## Verification switches
 
 | Variable | Effect |
@@ -83,7 +87,7 @@ Pinned component versions and hashes are in [manifest.json](manifest.json). Veri
 | `REMIQORA_LANG` | Force setup language: `en` or `ru` |
 | `REMIQORA_DEVTOOLS` | Open source-run DevTools |
 
-`npm test` uses Node’s test runner for downloader/setup/lifecycle/packaging behavior. Tests must use temporary configuration/data/engine paths; they must not touch a user’s library or download GPU weights. Follow [AGENTS.md](../AGENTS.md) and the isolated full checks in [fork maintenance](../docs/fork-maintenance.md).
+`npm test` uses Node’s test runner and an offline Python 3 harness for downloader/setup/lifecycle behavior. Set `PYTHON_BIN` if Python is not available as `python3` (`python` on Windows). Linux script tests use fake tools and are skipped on Windows. Tests use temporary configuration/data/engine paths and do not download GPU weights. Follow [AGENTS.md](../AGENTS.md) and the isolated full checks in [fork maintenance](../docs/fork-maintenance.md).
 
 [test/e2e/full.js](test/e2e/full.js) is the separate Windows/NVIDIA full-install/generation harness. It downloads real components and requires substantial disk/time; inspect its header and select an isolated folder before explicitly running it. Existing upstream execution reports do not verify the current fork. Unsigned-install behavior, clean installation, copied-library migration and GPU generation remain release checks, not claims made by CPU CI.
 

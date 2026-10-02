@@ -22,6 +22,8 @@ extraResources:
     to: frontend
   - from: resources/patches
     to: patches
+  - from: resources/external
+    to: external
 
 win:
   target:

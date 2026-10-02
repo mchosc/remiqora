@@ -8,13 +8,157 @@ const { execFileSync } = require('node:child_process');
 const manifest = require('../manifest.json');
 const { evaluateGpu, freeBytes, runChecks } = require('../src/bootstrap/checks');
 const { runSetup, isSetupComplete, describePlan } = require('../src/bootstrap/run');
-const { buildComponents, demucsProject, ffmpegExecutable } = require('../src/bootstrap/components');
+const { buildComponents, demucsProject, ffmpegExecutable, recoverAceStepSource, replaceAceStepSource } = require('../src/bootstrap/components');
 const { extract, tarBinary } = require('../src/bootstrap/extract');
 const { layout, PLATFORM } = require('../src/paths');
 const { backendEnv } = require('../src/server');
+const { ensureWritableDir } = require('../src/config');
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'remiqora-setup-'));
 const req = manifest.requirements;
+
+test('ACE recovery retains conflicting checkpoint trees', async () => {
+  const current = path.join(tmp(), 'ace');
+  for (const [dir, contents] of [[current, 'new model'], [`${current}.previous`, 'old model']]) {
+    fs.mkdirSync(path.join(dir, 'checkpoints'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'checkpoints', 'model'), contents);
+  }
+  await recoverAceStepSource(current);
+  assert.equal(fs.readFileSync(path.join(current, 'checkpoints', 'model'), 'utf8'), 'new model');
+  assert.equal(fs.readFileSync(path.join(`${current}.previous`, 'checkpoints', 'model'), 'utf8'), 'old model');
+});
+
+test('ACE replacement and interrupted swaps preserve downloaded checkpoints', async () => {
+  const current = path.join(tmp(), 'ace');
+  fs.mkdirSync(path.join(`${current}.previous`, 'checkpoints'), { recursive: true });
+  fs.writeFileSync(path.join(`${current}.previous`, 'checkpoints', 'model'), 'precious');
+  await recoverAceStepSource(current);
+  const staged = `${current}.tmp`;
+  fs.mkdirSync(staged);
+  fs.writeFileSync(path.join(staged, 'source'), 'replacement');
+  await replaceAceStepSource(current, staged);
+  assert.equal(fs.readFileSync(path.join(current, 'checkpoints', 'model'), 'utf8'), 'precious');
+  assert.equal(fs.readFileSync(path.join(current, 'source'), 'utf8'), 'replacement');
+  assert.equal(fs.existsSync(`${current}.previous`), false);
+});
+
+test('ACE failed source promotion restores the previous tree', async () => {
+  const fsp = require('node:fs/promises');
+  const current = path.join(tmp(), 'ace');
+  const staged = `${current}.tmp`;
+  fs.mkdirSync(path.join(current, 'checkpoints'), { recursive: true });
+  fs.mkdirSync(staged);
+  fs.writeFileSync(path.join(current, 'checkpoints', 'model'), 'retain');
+  const rename = fsp.rename;
+  fsp.rename = async (from, to) => {
+    if (from === staged) throw new Error('simulated interruption');
+    return rename(from, to);
+  };
+  try { await assert.rejects(replaceAceStepSource(current, staged), /simulated interruption/); }
+  finally { fsp.rename = rename; }
+  assert.equal(fs.readFileSync(path.join(current, 'checkpoints', 'model'), 'utf8'), 'retain');
+  assert.equal(fs.existsSync(staged), true);
+});
+
+test('later ACE updates retain earlier checkpoint conflicts', async () => {
+  const parent = tmp();
+  const current = path.join(parent, 'ace');
+  for (const [dir, contents] of [[current, 'new'], [`${current}.previous`, 'old']]) {
+    fs.mkdirSync(path.join(dir, 'checkpoints'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'checkpoints', 'model'), contents);
+  }
+  const staged = `${current}.tmp`;
+  fs.mkdirSync(staged);
+  await replaceAceStepSource(current, staged);
+  const retained = fs.readdirSync(parent).find((name) => name.startsWith('ace.preserved-'));
+  assert.ok(retained);
+  assert.equal(fs.readFileSync(path.join(parent, retained, 'checkpoints', 'model'), 'utf8'), 'old');
+  assert.equal(fs.readFileSync(path.join(current, 'checkpoints', 'model'), 'utf8'), 'new');
+});
+
+test('ACE version and verification include source commit and exact patch hash', async () => {
+  const L = layout(tmp(), 'darwin-arm64', manifest);
+  const patch = path.join(tmp(), 'patch');
+  fs.writeFileSync(patch, 'first patch');
+  const resources = { backend: path.join(__dirname, '..', '..', 'backend'), acePatch: patch, modelManagerPatch: path.join(__dirname, '..', '..', 'external', 'patches', 'yue-model-resume.patch') };
+  const component = () => buildComponents({ L, manifest, platform: 'darwin-arm64', resources }).find((c) => c.id === 'ace-step');
+  const first = component();
+  fs.mkdirSync(path.join(L.aceStep, '.venv'), { recursive: true });
+  fs.writeFileSync(path.join(L.aceStep, '.remiqora-patched'), 'obsolete-marker');
+  assert.equal(await first.verify(), false);
+  assert.ok(first.version.includes(manifest.aceStep.commit));
+  fs.writeFileSync(patch, 'second patch');
+  assert.notEqual(component().version, first.version);
+});
+
+test('model manager upgrades verify applied content, not a comment marker', async () => {
+  const L = layout(tmp(), 'darwin-arm64', manifest);
+  const resources = { backend: path.join(__dirname, '..', '..', 'backend'), acePatch: path.join(__dirname, '..', '..', 'external', 'patches', 'ace-step.patch'), modelManagerPatch: path.join(__dirname, '..', '..', 'external', 'patches', 'yue-model-resume.patch') };
+  fs.mkdirSync(path.join(L.yue2, 'tools'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'fixtures', 'model_manager_v2.py'), path.join(L.yue2, 'tools', 'model_manager_v2.py'));
+  const component = buildComponents({ L, manifest, platform: 'darwin-arm64', resources }).find((c) => c.id === 'model-manager-resume');
+  assert.ok(component);
+  assert.equal(component.network, false);
+  await component.install({}, () => {});
+  assert.equal(await component.verify(), true);
+  const script = path.join(L.yue2, 'tools', 'model_manager_v2.py');
+  fs.appendFileSync(script, '\n# accidental content change\n');
+  assert.equal(await component.verify(), false);
+  await component.install({}, () => {});
+  assert.equal(await component.verify(), true);
+});
+
+test('actual installation enforces pending disk and writability checks, including local-only updates', async () => {
+  const L = layout(tmp(), PLATFORM, manifest);
+  const installed = [];
+  const ctx = { L, manifest, platform: PLATFORM, resources: {}, components: fakeComponents(installed).map((c) => ({ ...c, network: false })),
+    checkInstall: async ({ requiredBytes, networkRequired }) => {
+      assert.ok(requiredBytes > 0);
+      assert.equal(networkRequired, false);
+      return { blocking: { code: 'no-disk' } };
+    } };
+  await assert.rejects(runSetup(ctx), (err) => err.code === 'no-disk');
+  assert.deepEqual(installed, []);
+});
+
+test('the installer refuses an unwritable root before a local update runs', async () => {
+  const root = path.join(tmp(), 'occupied');
+  fs.writeFileSync(root, 'existing file');
+  const L = layout(root, PLATFORM, manifest);
+  const installed = [];
+  await assert.rejects(runSetup({ L, manifest, platform: PLATFORM, resources: {}, components: fakeComponents(installed).map((c) => ({ ...c, network: false })) }), (error) => error.code === 'not-writable');
+  assert.deepEqual(installed, []);
+  assert.equal(fs.readFileSync(root, 'utf8'), 'existing file');
+});
+
+test('writability probes preserve existing files in the chosen root', async () => {
+  const root = tmp();
+  fs.writeFileSync(path.join(root, '.write-test'), 'user-owned content');
+  await ensureWritableDir(root);
+  assert.equal(fs.readFileSync(path.join(root, '.write-test'), 'utf8'), 'user-owned content');
+  assert.deepEqual(fs.readdirSync(root), ['.write-test']);
+});
+
+test('the setup plan measures only pending components and marks local-only updates', async () => {
+  const L = layout(tmp(), PLATFORM, manifest);
+  const ctx = { L, manifest, platform: PLATFORM, resources: {}, components: fakeComponents([]) };
+  await runSetup(ctx);
+  ctx.components = fakeComponents([]).map((c) => c.id === 'c' ? { ...c, version: '2', network: false } : c);
+  const plan = await describePlan(ctx);
+  assert.equal(plan.filter((c) => !c.done).reduce((n, c) => n + c.weight, 0), 10);
+  assert.equal(plan.find((c) => c.id === 'c').network, false);
+});
+
+test('local updates work offline and disk requirements exclude completed components', async () => {
+  const dir = tmp();
+  const result = await runChecks({ platform: 'darwin-arm64', dataRoot: dir, manifest, plan: [
+    { id: 'models', weight: Number.MAX_SAFE_INTEGER, done: true, network: true },
+    { id: 'patch', weight: 100, done: false, network: false },
+  ], fetchImpl: async () => { throw new Error('network must not be consulted'); } });
+  assert.equal(result.blocking, null);
+  assert.equal(result.items.find((c) => c.id === 'disk').requiredBytes, 150);
+  assert.equal(result.items.find((c) => c.id === 'network').required, false);
+});
 
 test('GPU verdicts', () => {
   assert.deepEqual(evaluateGpu({ name: 'RTX 4080', driver: '610.47', vramMiB: 16376, computeCap: 8.9 }, req), { ok: true });
@@ -94,7 +238,7 @@ test('the real plan has every component, in dependency order', () => {
   const L = layout(tmp(), 'win32-x64', manifest);
   const resources = { backend: path.join(__dirname, '..', '..', 'backend'), acePatch: path.join(__dirname, '..', '..', 'external', 'patches', 'ace-step.patch') };
   const ids = buildComponents({ L, manifest, platform: 'win32-x64', resources }).map((c) => c.id);
-  assert.deepEqual(ids, ['uv', 'ffmpeg', 'engine', 'backend-env', 'ace-step', 'ace-models', 'demucs', 'weights']);
+  assert.deepEqual(ids, ['uv', 'ffmpeg', 'engine', 'model-manager-resume', 'backend-env', 'ace-step', 'ace-models', 'demucs', 'weights']);
 });
 
 test('Demucs gets the CUDA torch index off macOS only', () => {

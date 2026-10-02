@@ -1,11 +1,12 @@
 import { apiFetch, apiJson } from './http'
 import * as v from './nativeValidation'
-import { parseAceJobResponse, parseAceJobsResponse, parseAceJobQueryResponse, parseAceJobReleaseResponse } from './contracts'
-import type { AceJobResponse, AceJobReleaseResponse, AceAdoptRequest } from './contracts'
+import { parseAceGenerationSettings, parseAceJobResponse, parseAceJobsResponse, parseAceJobQueryResponse, parseAceJobReleaseResponse } from './contracts'
+import type { AceGenerationSettings, AceJobResponse, AceJobReleaseResponse, AceAdoptRequest } from './contracts'
 
 const BASE = '/api/ace'
 
 export interface GenerateMusicRequest {
+  use_cot_caption?: boolean
   prompt?: string
   lyrics?: string
   sample_mode?: boolean
@@ -129,12 +130,14 @@ export async function stats(): Promise<StatsResponse> {
   return { jobs, queue_size: v.number(row.queue_size), queue_maxsize: v.number(row.queue_maxsize), avg_job_seconds: v.number(row.avg_job_seconds) }
 }
 
-export async function releaseTask(req: GenerateMusicRequest, refAudioFile: File | null | undefined, title: string, voiceId: string | null): Promise<ReleaseTaskResponse> {
+export async function releaseTask(req: GenerateMusicRequest, refAudioFile: File | null | undefined, title: string, voiceId: string | null, styleAudioFile?: File | null, settings?: AceGenerationSettings): Promise<ReleaseTaskResponse> {
   const form = new FormData()
   form.append('params', JSON.stringify(req))
   form.append('title', title)
   if (voiceId) form.append('voice_id', voiceId)
   if (refAudioFile) form.append('ctx_audio', refAudioFile, refAudioFile.name)
+  if (styleAudioFile) form.append('ref_audio', styleAudioFile, styleAudioFile.name)
+  if (settings) form.append('settings', JSON.stringify(parseAceGenerationSettings(settings)))
   return parseAceJobReleaseResponse(await apiFetch('/api/ace-jobs', { method: 'POST', body: form }))
 }
 

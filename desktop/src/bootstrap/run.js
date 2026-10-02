@@ -2,6 +2,7 @@
 const fsp = require('node:fs/promises');
 const { buildComponents } = require('./components');
 const { loadState, saveState } = require('./state');
+const { checkInstallation, installationRequirements } = require('./checks');
 
 /** Components that still have to be installed (missing from state.json, other version, or gone from disk). */
 async function pendingComponents(ctx) {
@@ -18,7 +19,7 @@ async function pendingComponents(ctx) {
 /** Description of the plan for the UI: what will be installed and how much it weighs. */
 async function describePlan(ctx) {
   const { all, done } = await pendingComponents(ctx);
-  return all.map((c) => ({ id: c.id, weight: c.weight, done: done.has(c.id) }));
+  return all.map((c) => ({ id: c.id, weight: c.weight, done: done.has(c.id), network: c.network === true, skipped: (ctx.skip || []).includes(c.id) }));
 }
 
 /**
@@ -28,6 +29,16 @@ async function describePlan(ctx) {
  */
 async function runSetup(ctx, emit = () => {}) {
   const skip = new Set(ctx.skip || []);
+  const plan = await describePlan(ctx);
+  const requirements = installationRequirements(plan);
+  if (plan.some((c) => !c.done && !c.skipped)) {
+    const result = await (ctx.checkInstall || checkInstallation)({ dataRoot: ctx.L.root, ...requirements, fetchImpl: ctx.fetchImpl });
+    if (result.blocking) {
+      const error = new Error(`Setup cannot continue: ${result.blocking.code}`);
+      error.code = result.blocking.code;
+      throw error;
+    }
+  }
   await fsp.mkdir(ctx.L.logs, { recursive: true });
   await fsp.mkdir(ctx.L.downloads, { recursive: true });
   const { all, done, state } = await pendingComponents(ctx);

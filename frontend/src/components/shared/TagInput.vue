@@ -10,6 +10,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const draft = ref('')
 const focused = ref(false)
+const composing = ref(false)
 const suggestionsOpen = ref(false)
 const highlighted = ref(-1)
 const inputEl = ref<HTMLInputElement | null>(null)
@@ -70,7 +71,28 @@ function onInput(): void {
   highlighted.value = -1
 }
 
+function commitDraft(): void {
+  if (!draft.value.trim()) return
+  const raw = draft.value
+  draft.value = ''
+  addTags(raw.split(','))
+}
+
+function onBlur(): void {
+  focused.value = false
+  suggestionsOpen.value = false
+  highlighted.value = -1
+  if (!composing.value) commitDraft()
+}
+
+function onCompositionEnd(e: CompositionEvent): void {
+  composing.value = false
+  if (e.target instanceof HTMLInputElement) draft.value = e.target.value
+  if (!focused.value) commitDraft()
+}
+
 function onKeydown(e: KeyboardEvent): void {
+  if (composing.value || e.isComposing || e.keyCode === 229) return
   if (e.key === 'ArrowDown' && suggestions.value.length) {
     e.preventDefault()
     suggestionsOpen.value = true
@@ -119,7 +141,9 @@ function selectSuggestion(s: string): void {
         @keydown="onKeydown"
         @paste="onPaste"
         @focus="focused = true; suggestionsOpen = true"
-        @blur="focused = false"
+        @blur="onBlur"
+        @compositionstart="composing = true"
+        @compositionend="onCompositionEnd"
       />
       <button
         v-if="tags.length"

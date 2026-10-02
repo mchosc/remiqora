@@ -12,10 +12,10 @@ import logging
 import math
 import os
 import shutil
-import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +28,9 @@ from .audio_encoding import (
     AudioExportFormat,
     AudioExportResponse,
     AudioExportsResponse,
+    StemName,
+    StemAudioExportResponse,
+    StemAudioExportsResponse,
     encoding_args,
     load_settings,
 )
@@ -50,6 +53,9 @@ _tasks: dict[str, asyncio.Task[None]] = {}
 _running: dict[str, ExportDocument] = {}
 _processes: dict[str, asyncio.subprocess.Process] = {}
 _deleting: set[int] = set()
+_stem_deleting: set[int] = set()
+_stem_name: TypeAdapter[StemName] = TypeAdapter(StemName)
+_stem_paths = TypeAdapter(dict[StemName, str])
 _unverified: set[str] = set()
 _invalid: set[tuple[int, str]] = set()
 _capacity = asyncio.Semaphore(2)
@@ -84,6 +90,7 @@ class ExportDocument(AudioExportResponse):
     worker: WorkerIdentity | None = None
     output_identity: OutputIdentity | None = None
     output_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    stem_name: StemName | None = None
 
 
 class ProbeStream(BaseModel):
@@ -187,7 +194,7 @@ def _response(document: ExportDocument) -> AudioExportResponse:
 
 def get_export(track_id: int, version_id: str, identifier: str) -> AudioExportResponse:
     document = load_document(track_id, identifier)
-    if document.version_id != _identifier(version_id):
+    if document.stem_name is not None or document.version_id != _identifier(version_id):
         raise AudioExportError("export_not_found")
     return _response(document)
 
@@ -220,14 +227,14 @@ def list_exports(track_id: int, version_id: str) -> AudioExportsResponse:
         exports=[
             _response(item)
             for item in _documents(track_id, strict=False)
-            if item.version_id == version_id
+            if item.stem_name is None and item.version_id == version_id
         ]
     )
 
 
 def export_file(track_id: int, version_id: str, identifier: str) -> Path:
     document = load_document(track_id, identifier)
-    if document.version_id != _identifier(version_id):
+    if document.stem_name is not None or document.version_id != _identifier(version_id):
         raise AudioExportError("export_not_found")
     if document.status != "done":
         raise AudioExportError("export_not_ready")
@@ -435,6 +442,9 @@ def _publish(document: ExportDocument) -> None:
     document.error_code = ""
     document.filename = f"{document.version_id}.{document.format}"
     document.audio_url = f"/api/tracks/{document.track_id}/versions/{document.version_id}/exports/{document.id}/audio"
+    if document.stem_name is not None:
+        document.filename = f"{document.stem_name}.{document.format}"
+        document.audio_url = f"/api/tracks/{document.track_id}/stems/{document.stem_name}/exports/{document.id}/audio"
     document.output_identity = _output_identity(_artifact(document))
     save_document(document)
     if document.expected_primary is not None:
@@ -526,6 +536,7 @@ async def create_export(
     settings: AudioEncodingSettings | None = None,
     *,
     update_default: bool = False,
+    _stem: StemName | None = None,
 ) -> AudioExportResponse:
     version_id = _identifier(version_id)
     profile = AudioEncodingSettings.model_validate_json(
@@ -534,13 +545,13 @@ async def create_export(
     if format not in {"mp3", "wav", "flac"}:
         raise AudioExportError("invalid_format")
     async with _lock:
-        if track_id in _deleting:
+        if track_id in _deleting or (_stem is not None and track_id in _stem_deleting):
             raise AudioExportError("track_busy")
         row = db.get_track(track_id)
         if row is None:
             raise AudioExportError("track_not_found")
         try:
-            source = resolve_source(track_id, version_id)
+            source = resolve_source(track_id, version_id) if _stem is None else stem_source(track_id, _stem)
             root = db.FILES_DIR.resolve()
             relative = source.relative_to(root)
             if (
@@ -556,6 +567,7 @@ async def create_export(
             _running.get(stored.id, stored)
             for stored in _documents(track_id)
             if stored.version_id == version_id
+            and stored.stem_name == _stem
             and stored.format == format
             and stored.settings == profile
             and stored.source_sha256 == digest
@@ -590,11 +602,12 @@ async def create_export(
             version_id=version_id,
             format=format,
             status="queued",
-            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            created_at=datetime.now(timezone.utc).isoformat(),
             settings=profile,
             source_relative=str(relative),
             source_sha256=digest,
             expected_primary=expected_primary,
+            stem_name=_stem,
         )
         directory = _directory(track_id, document.id)
         try:
@@ -648,7 +661,7 @@ async def cancel_export(
 ) -> AudioExportResponse:
     async with _lock:
         document = load_document(track_id, identifier)
-        if document.version_id != _identifier(version_id):
+        if document.stem_name is not None or document.version_id != _identifier(version_id):
             raise AudioExportError("export_not_found")
         await await_cleanup(_drain(document))
         return get_export(track_id, version_id, identifier)
@@ -658,7 +671,7 @@ async def retry_export(
     track_id: int, version_id: str, identifier: str
 ) -> AudioExportResponse:
     document = load_document(track_id, identifier)
-    if document.version_id != _identifier(version_id):
+    if document.stem_name is not None or document.version_id != _identifier(version_id):
         raise AudioExportError("export_not_found")
     if (
         document.worker is not None
@@ -692,6 +705,112 @@ def active_track_ids() -> set[int]:
     """Project owned jobs without scanning export files across the library."""
     return {document.track_id for document in _running.values()
             if document.status in {"queued", "running"}}
+
+
+def _validated_stem(name: str) -> StemName:
+    try:
+        return _stem_name.validate_python(name)
+    except ValidationError as exc:
+        raise AudioExportError('stem_not_found') from exc
+
+
+def stem_source(track_id: int, name: str) -> Path:
+    """Resolve only catalogued stems inside the library, without symlinks."""
+    from . import stems
+    name = _validated_stem(name)
+    if stems.is_active(track_id):
+        raise AudioExportError('stem_busy')
+    row = db.get_track(track_id)
+    if row is None:
+        raise AudioExportError('track_not_found')
+    try:
+        encoded = row['stems_json']
+        if not isinstance(encoded, str) or len(encoded) > 65536:
+            raise ValueError('invalid stem catalog')
+        paths = _stem_paths.validate_json(encoded)
+        source = Path(paths[name])
+        root = db.FILES_DIR.resolve()
+        if source.resolve() != source or not source.is_relative_to(root) or not source.is_file():
+            raise ValueError('invalid stem path')
+        return source
+    except (KeyError, OSError, ValueError, ValidationError) as exc:
+        raise AudioExportError('stem_not_found') from exc
+
+
+def _stem_document(track_id: int, name: str, identifier: str) -> ExportDocument:
+    document = load_document(track_id, identifier)
+    if document.stem_name != _validated_stem(name):
+        raise AudioExportError('export_not_found')
+    return document
+
+
+def _stem_response(document: ExportDocument) -> StemAudioExportResponse:
+    if document.stem_name is None:
+        raise AudioExportError('export_not_found')
+    response = _response(document)
+    return StemAudioExportResponse.model_validate({
+        **response.model_dump(exclude={'version_id'}), 'stem_name': document.stem_name,
+    })
+
+
+async def create_stem_export(track_id: int, name: str, format: AudioExportFormat) -> StemAudioExportResponse:
+    stem = _validated_stem(name)
+    # Legacy documents use an internal source key. Stem APIs expose the stem
+    # identity and never present this key as a generated song version.
+    source_key = hashlib.sha256(f'stem:{stem}'.encode()).hexdigest()[:32]
+    response = await create_export(track_id, source_key, format, _stem=stem)
+    return get_stem_export(track_id, stem, response.id)
+
+
+def get_stem_export(track_id: int, name: str, identifier: str) -> StemAudioExportResponse:
+    return _stem_response(_stem_document(track_id, name, identifier))
+
+
+def list_stem_exports(track_id: int, name: str) -> StemAudioExportsResponse:
+    stem = _validated_stem(name)
+    return StemAudioExportsResponse(exports=[_stem_response(doc) for doc in reversed(_documents(track_id, strict=False)) if doc.stem_name == stem])
+
+
+def stem_export_file(track_id: int, name: str, identifier: str) -> Path:
+    document = _stem_document(track_id, name, identifier)
+    if document.status != 'done' or not _output_current(document):
+        raise AudioExportError('export_not_ready')
+    return _artifact(document)
+
+
+async def cancel_stem_export(track_id: int, name: str, identifier: str) -> StemAudioExportResponse:
+    async with _lock:
+        document = _stem_document(track_id, name, identifier)
+        await await_cleanup(_drain(document))
+        return get_stem_export(track_id, name, identifier)
+
+
+async def retry_stem_export(track_id: int, name: str, identifier: str) -> StemAudioExportResponse:
+    document = _stem_document(track_id, name, identifier)
+    if document.worker is not None or document.id in _processes or document.id in _unverified:
+        raise AudioExportError('worker_identity_unverified')
+    response = await create_export(track_id, document.version_id, document.format, document.settings, _stem=document.stem_name)
+    return get_stem_export(track_id, name, response.id)
+
+
+@asynccontextmanager
+async def protect_stem_exports_removal(track_id: int) -> AsyncIterator[None]:
+    async with _lock:
+        if track_id in _stem_deleting or track_id in _deleting:
+            raise AudioExportError('track_busy')
+        _stem_deleting.add(track_id)
+        try:
+            documents = [doc for doc in _documents(track_id) if doc.stem_name is not None]
+            await await_cleanup(_drain_all(documents, propagate=True))
+            for document in documents:
+                shutil.rmtree(_directory(track_id, document.id))
+        except BaseException:
+            _stem_deleting.discard(track_id)
+            raise
+    try:
+        yield
+    finally:
+        _stem_deleting.discard(track_id)
 
 
 async def cancel_track_exports(track_id: int) -> None:

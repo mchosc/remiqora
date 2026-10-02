@@ -6,6 +6,7 @@ import * as tracks from '../api/tracks'
 import { parseSavedTrack } from '../api/contracts'
 import * as voices from '../api/voices'
 import type { ApplyStatus } from '../api/voices'
+vi.mock('../api/yueJobs', async original => ({ ...await original<typeof import('../api/yueJobs')>(), list: vi.fn().mockResolvedValue([]) }))
 vi.mock('../api/tracks', async original => ({ ...await original<typeof import('../api/tracks')>(), listTracks: vi.fn(), renameTrack: vi.fn(), deleteTrack: vi.fn() }))
 vi.mock('../api/voices', async original => ({ ...await original<typeof import('../api/voices')>(), applyStatus: vi.fn().mockResolvedValue({ status: 'idle', error: '', error_code: '', audio_url: '' }) }))
 const idle: ApplyStatus = { status: 'idle', error: '', error_code: '', audio_url: '' }

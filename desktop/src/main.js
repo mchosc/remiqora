@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, Notification } = require('electron');
 const path = require('node:path');
 const { PLATFORM, resourcePaths, defaultDataRoot, layout } = require('./paths');
 const manifest = require('../manifest.json');
@@ -7,6 +7,8 @@ const { runChecks } = require('./bootstrap/checks');
 const { describePlan, runSetup, isSetupComplete } = require('./bootstrap/run');
 const { BackendServer } = require('./server');
 const { loadConfig, updateConfig, ensureWritableDir } = require('./config');
+const { notificationHandlers } = require('./notifications');
+const { versionedDocumentUrl } = require('./navigation');
 
 // Only these links can be opened from the first-run screen.
 const EXTERNAL = {
@@ -85,7 +87,7 @@ async function launch() {
       savedPort = server.port;
       await updateConfig(app.getPath('userData'), { port: savedPort });
     }
-    await win.loadURL(url);
+    await win.loadURL(versionedDocumentUrl(url, app.getVersion()));
   } catch (err) {
     showSetup({ state: 'crashed', message: err.message });
   }
@@ -107,6 +109,9 @@ async function startSetup() {
 }
 
 function registerIpc() {
+  const notifications = notificationHandlers({ Notification, getWindow: () => win, getOrigin: () => server?.url });
+  ipcMain.handle('notifications:capability', (event) => notifications.capability(event));
+  ipcMain.handle('notifications:notify', (event, payload) => notifications.notify(event, payload));
   ipcMain.handle('setup:context', async () => {
     const plan = await describePlan(ctx);
     return {
@@ -117,10 +122,13 @@ function registerIpc() {
       languages: process.env.REMIQORA_LANG ? [process.env.REMIQORA_LANG] : [app.getLocale(), ...app.getPreferredSystemLanguages()],
       dataRoot: ctx.L.root,
       plan,
-      totalBytes: plan.reduce((sum, c) => sum + c.weight, 0),
+      totalBytes: plan.filter((c) => !c.done && !c.skipped).reduce((sum, c) => sum + c.weight, 0),
     };
   });
-  ipcMain.handle('setup:checks', (_e, dataRoot) => runChecks({ platform: PLATFORM, dataRoot: dataRoot || ctx.L.root, manifest }));
+  ipcMain.handle('setup:checks', async (_e, dataRoot) => {
+    const root = dataRoot || ctx.L.root;
+    return runChecks({ platform: PLATFORM, dataRoot: root, manifest, plan: await describePlan(buildContext(root)) });
+  });
   ipcMain.handle('setup:choose-folder', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     if (r.canceled || !r.filePaths[0]) return null;

@@ -1,11 +1,4 @@
-"""Launch, health-check and tear down a single OS process.
-
-Windows has no SIGTERM, so "graceful" stop means sending CTRL_BREAK_EVENT to
-the process group (requires the child to have been started with
-CREATE_NEW_PROCESS_GROUP) and waiting; if it doesn't exit in time we fall
-back to `taskkill /T /F`, which also reaps children `uv run` / `cmd` spawn
-that CTRL_BREAK alone would miss.
-"""
+"""Launch owned native supervisors; backend death tears down their children."""
 from __future__ import annotations
 
 import asyncio
@@ -13,11 +6,17 @@ import os
 import signal
 import subprocess
 import sys
+import uuid
+from pathlib import Path
+from typing import IO
 from typing import Optional
 
 import httpx
 
 from ..config import LOG_DIR, LOG_TAIL_LINES, ProcessSpec
+from .windows_job import WindowsJob
+from .windows_supervisor import supervisor_command as windows_command
+from .posix_supervisor import read_receipt, supervisor_command as posix_command
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -47,10 +46,14 @@ def tail_log(name: str, lines: int = LOG_TAIL_LINES) -> str:
 
 
 class ManagedProcess:
-    def __init__(self, spec: ProcessSpec):
+    def __init__(self, spec: ProcessSpec) -> None:
         self.spec = spec
-        self._proc: Optional[subprocess.Popen] = None
-        self._log_file = None
+        self._proc: Optional[subprocess.Popen[bytes]] = None
+        self._log_file: IO[str] | None = None
+        self._owns_group = False
+        self._windows_job: WindowsJob | None = None
+        self._supervisor_token: str | None = None
+        self._supervisor_receipt: Path | None = None
 
     @property
     def is_running(self) -> bool:
@@ -58,21 +61,45 @@ class ManagedProcess:
 
     def exit_summary(self) -> str:
         code = self._proc.returncode if self._proc else None
+        if self._proc is not None and self._supervisor_receipt is not None and self._supervisor_token is not None:
+            receipt = read_receipt(self._supervisor_receipt, self._supervisor_token, self._proc.pid)
+            if receipt is not None and receipt.returncode is not None:
+                code = receipt.returncode
         return f"process '{self.spec.name}' exited (code {code}).\n{tail_log(self.spec.name)}"
 
     def start(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{self.spec.name}.log"
         self._log_file = open(log_path, "w", encoding="utf-8", errors="replace")
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
-        self._proc = subprocess.Popen(
-            self.spec.cmd,
-            cwd=str(self.spec.cwd),
-            env=_build_env(self.spec),
-            stdout=self._log_file,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-        )
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        try:
+            command = self.spec.cmd
+            if IS_WINDOWS:
+                self._windows_job = WindowsJob.create()
+                command = windows_command(self._windows_job.name, command)
+            else:
+                self._supervisor_token = uuid.uuid4().hex
+                self._supervisor_receipt = LOG_DIR / f'.{self.spec.name}.native.{self._supervisor_token}.json'
+                command = posix_command(self._supervisor_token, self._supervisor_receipt, command)
+            self._proc = subprocess.Popen(
+                command,
+                cwd=str(self.spec.cwd),
+                env=_build_env(self.spec),
+                stdin=subprocess.PIPE,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+                start_new_session=not IS_WINDOWS,
+            )
+        except BaseException:
+            if self._windows_job is not None:
+                self._windows_job.close()
+                self._windows_job = None
+            self._close_log()
+            raise
+        self._owns_group = not IS_WINDOWS
 
     async def wait_healthy(self, cancel: Optional[asyncio.Event] = None) -> None:
         loop = asyncio.get_event_loop()
@@ -112,32 +139,71 @@ class ManagedProcess:
     async def wait_stopped(self, timeout: float) -> bool:
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
-        while self.is_running:
+        while self.is_running or self._session_alive() or (self._windows_job is not None and self._windows_job.active_processes() > 0):
             if loop.time() > deadline:
                 return False
             await asyncio.sleep(0.5)
         return True
 
+    def _session_alive(self) -> bool:
+        if sys.platform == 'win32' or not self._owns_group or self._proc is None:
+            return False
+        try:
+            os.killpg(self._proc.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
     async def stop(self) -> None:
-        if not self.is_running:
+        if self._windows_job is not None:
+            # Closing the pipe also stops a supervisor whose startup races Stop.
+            if self._proc is not None and self._proc.stdin is not None:
+                self._proc.stdin.close()
+            self._windows_job.terminate()
+            if not await self.wait_stopped(10.0):
+                raise RuntimeError(f"Process tree '{self.spec.name}' did not stop")
+            self._windows_job.close()
+            self._windows_job = None
             self._close_log()
             return
+        if not self.is_running:
+            if self._proc is not None and self._session_alive():
+                if self._supervisor_token is not None and (self._supervisor_receipt is None or read_receipt(self._supervisor_receipt, self._supervisor_token, self._proc.pid) is None):
+                    raise RuntimeError('Native session ownership could not be verified')
+                await self._force_kill(self._proc.pid)
+                if not await self.wait_stopped(10.0):
+                    raise RuntimeError(f"Process tree '{self.spec.name}' did not stop")
+            self._close_log()
+            return
+        if self._proc is None:
+            raise RuntimeError('Native process ownership is missing')
         pid = self._proc.pid
-        if IS_WINDOWS:
+        if sys.platform == 'win32':
             try:
                 self._proc.send_signal(signal.CTRL_BREAK_EVENT)
             except (OSError, ValueError):
                 pass
         else:
-            self._proc.terminate()
+            if self._owns_group:
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            else:
+                self._proc.terminate()
         stopped = await self.wait_stopped(self.spec.shutdown_timeout)
         if not stopped:
             await self._force_kill(pid)
-            await self.wait_stopped(10.0)
+            if not await self.wait_stopped(10.0):
+                raise RuntimeError(f"Process '{self.spec.name}' did not stop")
+        elif self._owns_group and self._supervisor_token is None:
+            # A launcher may exit before a descendant which ignored SIGTERM.
+            # Reap the owned session even when the parent stopped gracefully.
+            await self._force_kill(pid)
         self._close_log()
 
     async def _force_kill(self, pid: int) -> None:
-        if IS_WINDOWS:
+        if sys.platform == 'win32':
             proc = await asyncio.create_subprocess_exec(
                 "taskkill", "/PID", str(pid), "/T", "/F",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
@@ -145,11 +211,18 @@ class ManagedProcess:
             await proc.wait()
         else:
             try:
-                self._proc.kill()
+                if self._owns_group:
+                    os.killpg(pid, signal.SIGKILL)
+                elif self._proc is not None:
+                    self._proc.kill()
             except OSError:
                 pass
 
     def _close_log(self) -> None:
+        if self._proc is not None and self._proc.poll() is not None and self._proc.stdin is not None:
+            self._proc.stdin.close()
+        if self._supervisor_receipt is not None and not self.is_running and not self._session_alive():
+            self._supervisor_receipt.unlink(missing_ok=True)
         if self._log_file:
             try:
                 self._log_file.close()

@@ -1,94 +1,42 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useYue2Store } from '../../stores/yue2'
-import * as api from '../../api/yue2'
 import type { CotMode, GenerateOptions } from '../../api/yue2'
 import ChipGroup from '../../components/shared/ChipGroup.vue'
 import CollapsibleDetails from '../../components/shared/CollapsibleDetails.vue'
 import HelpModal from '../../components/shared/HelpModal.vue'
 import TagInput from '../../components/shared/TagInput.vue'
 import VoiceSelect from '../../components/shared/VoiceSelect.vue'
-import { parseYue2Presets, samplingSettings, finiteNumber, SAMPLING_KEYS, type SamplingKey, type SamplingSettings, type Yue2Preset } from '../../composables/generationPresets'
+import GenerationLibraryButton from '../../components/shared/GenerationLibraryButton.vue'
+import ReferencePreparationButton from '../../components/shared/ReferencePreparationButton.vue'
+import { setActiveVoiceId } from '../../api/voices'
+import type { YueGenerationSettings } from '../../api/contracts'
+import { pendingYueDraft, pendingYueReference } from '../../composables/generationDrafts'
+import { samplingSettings, finiteNumber, SAMPLING_KEYS, type SamplingKey, type SamplingSettings } from '../../composables/generationPresets'
 
+const props = withDefaults(defineProps<{ generationAvailable?: boolean }>(), { generationAvailable: true })
 const store = useYue2Store()
+const selectedVoiceId = ref<string | null>(null)
+const referenceNotice = ref(false)
 const { t, tm } = useI18n()
-
-const presets = ref<Yue2Preset[]>([])
-const selectedPresetName = ref('')
-const newPresetName = ref('')
-const showPresetInput = ref(false)
-
-function loadPresets() {
-  try {
-    const raw = localStorage.getItem('yue2_presets')
-    if (raw) {
-      const value: unknown = JSON.parse(raw)
-      presets.value = parseYue2Presets(value)
-    }
-  } catch {}
-}
-
-function saveCurrentPreset() {
-  const name = newPresetName.value.trim()
-  if (!name) return
-  const preset: Yue2Preset = {
-    name,
-    lyrics: lyrics.value,
-    style: style.value,
-    cot: cot.value,
-    precision: precision.value,
-    abc: abc.value,
-    cfgScale: cfgScale.value,
-    numInferenceSteps: numInferenceSteps.value,
-    semantic: { ...semantic },
-    abcSampling: { ...abcSampling },
-  }
-  const idx = presets.value.findIndex((p) => p.name === preset.name)
-  if (idx !== -1) presets.value[idx] = preset
-  else presets.value.push(preset)
-  localStorage.setItem('yue2_presets', JSON.stringify(presets.value))
-  selectedPresetName.value = name
-  newPresetName.value = ''
-  showPresetInput.value = false
-}
-
-function applyPreset(name: string) {
-  const p = presets.value.find((x) => x.name === name)
-  if (!p) return
-  lyrics.value = p.lyrics || ''
-  style.value = p.style || ''
-  cot.value = p.cot || 'off'
-  precision.value = p.precision || 'q8_0'
-  abc.value = p.abc || ''
-  cfgScale.value = p.cfgScale ?? null
-  numInferenceSteps.value = p.numInferenceSteps ?? null
-  if (p.semantic) Object.assign(semantic, p.semantic)
-  if (p.abcSampling) Object.assign(abcSampling, p.abcSampling)
-}
-
-function deletePreset(name: string) {
-  presets.value = presets.value.filter((p) => p.name !== name)
-  localStorage.setItem('yue2_presets', JSON.stringify(presets.value))
-  if (selectedPresetName.value === name) selectedPresetName.value = ''
-}
-
-onMounted(loadPresets)
 
 watch(
   () => store.pendingParamsInsert,
   (params) => {
     if (!params) return
-    if (typeof params.lyrics === 'string') lyrics.value = params.lyrics
-    if (typeof params.style === 'string') style.value = params.style
-    if (params.cot === 'off' || params.cot === 'melody' || params.cot === 'full') cot.value = params.cot
-    if (params.precision === 'q8_0' || params.precision === 'q4_0') precision.value = params.precision
-    if (finiteNumber(params.seed)) seed.value = params.seed
-    if (typeof params.abc === 'string') abc.value = params.abc
-    if (finiteNumber(params.cfg_scale)) cfgScale.value = params.cfg_scale
-    if (finiteNumber(params.num_inference_steps)) numInferenceSteps.value = params.num_inference_steps
-    if (params.semantic) Object.assign(semantic, samplingSettings(params.semantic))
-    if (params.abc_sampling) Object.assign(abcSampling, samplingSettings(params.abc_sampling))
+    referenceImportId.value = null; referenceNotice.value = false
+    lyrics.value = typeof params.lyrics === 'string' ? params.lyrics : ''
+    style.value = typeof params.style === 'string' ? params.style : ''
+    cot.value = params.cot === 'melody' || params.cot === 'full' ? params.cot : 'off'
+    precision.value = params.precision === 'q4_0' ? params.precision : 'q8_0'
+    seed.value = finiteNumber(params.seed) ? params.seed : 831001
+    randomSeed.value = params.random_seed === true
+    abc.value = typeof params.abc === 'string' ? params.abc : ''
+    cfgScale.value = finiteNumber(params.cfg_scale) ? params.cfg_scale : null
+    numInferenceSteps.value = finiteNumber(params.num_inference_steps) ? params.num_inference_steps : params.num_inference_steps === null ? null : 8
+    Object.assign(semantic, samplingSettings(params.semantic))
+    Object.assign(abcSampling, samplingSettings(params.abc_sampling))
     for (const key of SAMPLING_KEYS) {
       const semanticValue = params[`semantic_${key}`]
       const abcValue = params[`abc_${key}`]
@@ -105,27 +53,44 @@ const cot = ref<CotMode>('off')
 const precision = ref<'q8_0' | 'q4_0'>('q8_0')
 const abc = ref('')
 
-const coverFile = ref<File | null>(null)
-const unloadSheetSage = ref(true)
-const extracting = ref(false)
-const coverStatus = ref('')
-const coverError = ref('')
-let extractionGeneration = 0
-let extractionController: AbortController | undefined
-onBeforeUnmount(() => { extractionGeneration++; extractionController?.abort() })
+const referenceImportId = ref<string | null>(null)
+let formAlive = true
+onBeforeUnmount(() => { formAlive = false })
 
 const seed = ref(831001)
 const randomSeed = ref(false)
-const batchSize = ref<1 | 2 | 3 | 4>(1)
+const batchSize = ref(1)
 
 const cfgScale = ref<number | null>(null)
-const numInferenceSteps = ref<number | null>(null)
+const numInferenceSteps = ref<number | null>(8)
 const semantic = reactive<SamplingSettings>({
   temperature: null, top_p: null, top_k: null, repetition_penalty: null, penalty_window: null, min_tokens: null, max_tokens: null,
 })
 const abcSampling = reactive<SamplingSettings>({
   temperature: null, top_p: null, top_k: null, repetition_penalty: null, penalty_window: null, min_tokens: null, max_tokens: null,
 })
+
+const snapshot = computed<YueGenerationSettings>(() => ({
+  engine: 'yue2', referenceImportId: referenceImportId.value, lyrics: lyrics.value, style: style.value, cot: cot.value, precision: precision.value,
+  abc: abc.value, cfgScale: cfgScale.value, numInferenceSteps: numInferenceSteps.value,
+  semantic: { ...semantic }, abcSampling: { ...abcSampling }, seed: seed.value, randomSeed: randomSeed.value,
+  batchSize: batchSize.value, voiceId: selectedVoiceId.value, referenceRequiresReupload: referenceNotice.value,
+}))
+watch(pendingYueDraft, saved => {
+  if (!saved) return
+  lyrics.value = saved.lyrics; style.value = saved.style; cot.value = saved.cot; precision.value = saved.precision
+  abc.value = saved.abc; cfgScale.value = saved.cfgScale; numInferenceSteps.value = saved.numInferenceSteps
+  Object.assign(semantic, saved.semantic); Object.assign(abcSampling, saved.abcSampling)
+  seed.value = saved.seed ?? 831001; randomSeed.value = saved.randomSeed; batchSize.value = saved.batchSize
+  referenceImportId.value = saved.referenceImportId ?? null; referenceNotice.value = saved.referenceRequiresReupload
+  setActiveVoiceId(saved.voiceId); selectedVoiceId.value = saved.voiceId; pendingYueDraft.value = null
+}, { immediate: true })
+watch(pendingYueReference, edit => {
+  if (!edit) return
+  if (edit.lyrics !== undefined) lyrics.value = edit.lyrics
+  if (edit.abc !== undefined) { abc.value = edit.abc; if (cot.value === 'off') cot.value = 'melody' }
+  referenceImportId.value = edit.referenceImportId ?? null; referenceNotice.value = false; pendingYueReference.value = null
+}, { immediate: true })
 
 const submitting = ref(false)
 const formError = ref('')
@@ -161,55 +126,6 @@ watch(
   },
 )
 
-function onCoverFileChange(e: Event) {
-  coverFile.value = e.target instanceof HTMLInputElement ? e.target.files?.[0] ?? null : null
-}
-
-async function extractAbc() {
-  const file = coverFile.value
-  if (!file) return
-  const generation = ++extractionGeneration
-  const controller = new AbortController()
-  extractionController?.abort()
-  extractionController = controller
-  const isCurrent = () => generation === extractionGeneration && !controller.signal.aborted
-  coverError.value = ''
-  extracting.value = true
-  coverStatus.value = t('yueGen.loadingSheetSage')
-  try {
-    const sheetSage = await api.getSheetSageModelSpec()
-    if (!isCurrent()) return
-    await api.ensureLoaded(sheetSage, undefined, controller.signal)
-    if (!isCurrent()) return
-    coverStatus.value = t('yueGen.uploadingAudio')
-    const path = await api.uploadFile(file, controller.signal)
-    if (!isCurrent()) return
-    coverStatus.value = t('yueGen.recognizingMelody')
-    const result = await api.runTask(sheetSage.id, { audio: path, options: {} }, controller.signal)
-    if (!isCurrent()) return
-    const extracted = api.abcFromResult(result)
-    if (!extracted.trim()) throw new Error(t('yueGen.noAbcReturned'))
-    abc.value = extracted
-    if (cot.value === 'off') cot.value = 'melody'
-    coverStatus.value = t('yueGen.abcExtracted')
-  } catch (err) {
-    if (!isCurrent()) return
-    coverStatus.value = ''
-    coverError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    if (isCurrent() && unloadSheetSage.value) {
-      try {
-        const sheetSage = await api.getSheetSageModelSpec()
-        if (!isCurrent()) return
-        await api.unloadModelId(sheetSage.id)
-      } catch {
-        // best-effort VRAM cleanup - a failed unload isn't user-actionable here
-      }
-    }
-    if (isCurrent()) extracting.value = false
-  }
-}
-
 function buildOptions(): GenerateOptions {
   const options: GenerateOptions = { style: style.value.trim(), cot: cot.value }
   if (cfgScale.value != null) options.cfg_scale = cfgScale.value
@@ -229,6 +145,7 @@ function buildOptions(): GenerateOptions {
 }
 
 async function submit() {
+  if (!props.generationAvailable || submitting.value) return
   formError.value = ''
   if (!lyrics.value.trim()) {
     formError.value = t('yueGen.enterLyrics')
@@ -249,9 +166,13 @@ async function submit() {
       randomSeed: randomSeed.value,
       batchSize: batchSize.value,
       options: buildOptions(),
+      settings: snapshot.value,
+      voiceId: selectedVoiceId.value,
     })
+  } catch (cause) {
+    if (formAlive) formError.value = t(cause instanceof TypeError ? 'generationWorkspace.invalid' : 'generationWorkspace.submitFailed')
   } finally {
-    submitting.value = false
+    if (formAlive) submitting.value = false
   }
 }
 </script>
@@ -259,63 +180,15 @@ async function submit() {
 <template>
   <div class="lg:sticky lg:top-20 lg:self-start">
     <div class="space-y-4 rounded-xl border border-border bg-panel p-4">
-      <VoiceSelect link />
-      <button type="button" class="accent-gradient w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting" @click="submit">
+      <VoiceSelect link @select="selectedVoiceId = $event" />
+      <button type="button" class="accent-gradient w-full rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting || !generationAvailable" @click="submit">
         {{ submitting ? t('yueGen.submitting') : t('yueGen.submit') }}
       </button>
       <p v-if="formError" class="rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">{{ formError }}</p>
 
-      <!-- Preset bar -->
-      <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-panel-2 p-2">
-        <select
-          v-model="selectedPresetName"
-          class="flex-1 min-w-32 rounded border border-border bg-panel px-2 py-1 text-xs text-text"
-          @change="applyPreset(selectedPresetName)"
-        >
-          <option value="">{{ t('aceGen.presetPlaceholder') }}</option>
-          <option v-for="p in presets" :key="p.name" :value="p.name">{{ p.name }}</option>
-        </select>
-        <button
-          v-if="!showPresetInput"
-          type="button"
-          class="rounded border border-border px-2 py-1 text-xs text-text hover:bg-panel"
-          :title="t('aceGen.savePresetTitle')"
-          @click="showPresetInput = true"
-        >
-          {{ t('aceGen.addPreset') }}
-        </button>
-        <button
-          v-if="selectedPresetName"
-          type="button"
-          class="rounded px-1.5 py-1 text-xs text-status-failed hover:bg-status-failed/10"
-          :title="t('aceGen.deletePresetTitle')"
-          @click="deletePreset(selectedPresetName)"
-        >
-          ✕
-        </button>
-        <div v-if="showPresetInput" class="flex w-full items-center gap-1 pt-1">
-          <input
-            v-model="newPresetName"
-            :placeholder="t('aceGen.presetNamePlaceholder')"
-            class="flex-1 rounded border border-border bg-panel px-2 py-0.5 text-xs text-text"
-            @keyup.enter="saveCurrentPreset"
-          />
-          <button
-            type="button"
-            class="accent-gradient rounded px-2 py-0.5 text-xs text-white"
-            @click="saveCurrentPreset"
-          >
-            {{ t('aceGen.save') }}
-          </button>
-          <button
-            type="button"
-            class="text-xs text-text-dim hover:text-text"
-            @click="showPresetInput = false"
-          >
-            {{ t('aceGen.cancel') }}
-          </button>
-        </div>
-      </div>
+      <GenerationLibraryButton :settings="snapshot" />
+      <ReferencePreparationButton engine="yue2" />
+      <p v-if="referenceNotice" class="text-xs text-status-queued">{{ t('generationWorkspace.reupload') }}</p>
 
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
@@ -358,19 +231,7 @@ async function submit() {
           <label class="text-xs text-text-dim">{{ t('yueGen.abcScore') }}</label>
           <textarea v-model="abc" rows="6" class="w-full rounded-lg border border-border bg-panel-2 p-2.5 font-mono text-xs text-text"></textarea>
         </div>
-        <div class="space-y-2 rounded-lg border border-border bg-panel p-3">
-          <p class="text-xs font-medium text-text">{{ t('yueGen.extractSectionTitle') }}</p>
-          <input type="file" accept="audio/*" class="block w-full text-xs text-text-dim file:mr-3 file:rounded-md file:border-0 file:accent-gradient file:px-3 file:py-1.5 file:text-white" @change="onCoverFileChange" />
-          <label class="flex items-center gap-2 text-xs text-text-dim">
-            <input v-model="unloadSheetSage" type="checkbox" class="rounded border-border" />
-            {{ t('yueGen.unloadSheetSage') }}
-          </label>
-          <button type="button" class="accent-gradient rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50" :disabled="!coverFile || extracting" @click="extractAbc">
-            {{ extracting ? t('yueGen.extracting') : t('yueGen.extract') }}
-          </button>
-          <p v-if="coverStatus" class="text-xs text-text-dim">{{ coverStatus }}</p>
-          <p v-if="coverError" class="rounded-lg bg-status-failed/10 p-2 text-xs text-status-failed">{{ coverError }}</p>
-        </div>
+
       </div>
 
       <div class="grid grid-cols-2 gap-3">
@@ -398,10 +259,11 @@ async function submit() {
           </div>
           <div>
             <label class="text-xs text-text-dim">{{ t('aceGen.inferenceSteps') }}</label>
-            <input v-model.number="numInferenceSteps" type="number" class="w-full rounded-lg border border-border bg-panel-2 p-2 text-sm text-text" :placeholder="t('yueGen.defaultPlaceholder')" />
+            <input v-model.number="numInferenceSteps" type="number" min="1" max="256" aria-label="YuE inference steps" class="w-full rounded-lg border border-border bg-panel-2 p-2 text-sm text-text" :placeholder="t('yueGen.defaultPlaceholder')" />
           </div>
         </div>
 
+        <p class="text-xs text-text-dim">{{ t('generationWorkspace.stepsHint') }}</p>
         <CollapsibleDetails :summary="t('yueGen.semanticSampling')">
           <div class="grid grid-cols-2 gap-2">
             <div v-for="f in SAMPLING_FIELDS" :key="'sem_' + f.key">

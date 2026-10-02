@@ -9,6 +9,18 @@ from app import resource_admission as admission
 
 
 class ResourceAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exclusive_model_reservation_does_not_block_another_model(self) -> None:
+        first = await admission.reserve_native(lambda: False, model_id='yue2', exclusive=True)
+        try:
+            with self.assertRaises(admission.ResourceBusyError):
+                await admission.reserve_native(lambda: False, model_id='yue2', exclusive=True)
+            other = await admission.reserve_native(lambda: False, model_id='ace_step', exclusive=True)
+            await other.release()
+            self.assertTrue(admission.native_work_inflight())
+        finally:
+            await first.release()
+        self.assertFalse(admission.native_work_inflight())
+
     async def asyncSetUp(self) -> None:
         self.lock = patch.object(admission, "admission_lock", asyncio.Lock())
         self.lock.start()

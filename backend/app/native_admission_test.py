@@ -55,3 +55,37 @@ class NativeRouteAdmissionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await routes_proxy._make_proxy_route('yue2')(self.request(), 'v1/tasks/run')
         self.assertFalse(resource_admission.native_work_inflight())
+
+    async def test_legacy_http_cancellation_drains_reset_before_release(self) -> None:
+        entered, resetting, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def send(*args, **kwargs):
+            entered.set()
+            await asyncio.Future()
+        async def reset(model):
+            resetting.set()
+            await released.wait()
+        request = self.request()
+        request._receive = AsyncMock(return_value={'type': 'http.request', 'body': b'{}', 'more_body': False})
+        with patch.object(routes_proxy.manager.state, 'models', {'yue2': SimpleNamespace(status=ModelStatus.RUNNING)}), patch('app.video_jobs.work_busy', return_value=False), patch.object(routes_proxy._client, 'send', side_effect=send), patch.object(routes_proxy.manager, 'restart_model', side_effect=reset):
+            task = asyncio.create_task(routes_proxy._make_proxy_route('yue2')(request, 'v1/tasks/run'))
+            await entered.wait()
+            task.cancel()
+            await resetting.wait()
+            self.assertTrue(resource_admission.native_work_inflight())
+            released.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertFalse(resource_admission.native_work_inflight())
+
+    async def test_failed_legacy_reset_quarantines_lease_until_verified_recovery(self) -> None:
+        from app import native_yue
+        lease = await resource_admission.reserve_native(lambda: False, model_id='yue2', exclusive=True)
+        owner = routes_proxy._ProxyOwnership('yue2', lease)
+        owner.requested = True
+        with patch.object(routes_proxy.manager, 'restart_model', new=AsyncMock(side_effect=RuntimeError('stop failed'))), self.assertLogs('app.api.routes_proxy', level='ERROR'):
+            with self.assertRaises(RuntimeError):
+                await owner.close()
+        self.assertTrue(resource_admission.native_work_inflight())
+        with patch.object(native_yue.manager, 'restart_model', new=AsyncMock()):
+            await native_yue.recover_quarantined()
+        self.assertFalse(resource_admission.native_work_inflight())

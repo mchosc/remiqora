@@ -2,18 +2,20 @@
 import { useI18n } from 'vue-i18n'
 import type { JobStatus } from '../../types'
 
-defineProps<{ status: JobStatus, label?: string }>()
+defineProps<{ status: JobStatus | 'stopping', label?: string }>()
 
 const { t } = useI18n()
 
-const LABEL_KEYS: Record<JobStatus, string> = {
+const LABEL_KEYS: Record<JobStatus | 'stopping', string> = {
+  stopping: 'generationWorkspace.stopping',
   queued: 'jobStatus.queued',
   running: 'jobStatus.running',
   done: 'jobStatus.done',
   failed: 'jobStatus.failed',
   cancelled: 'jobStatus.cancelled',
 }
-const COLORS: Record<JobStatus, string> = {
+const COLORS: Record<JobStatus | 'stopping', string> = {
+  stopping: 'bg-status-queued/15 text-status-queued',
   queued: 'bg-status-queued/15 text-status-queued',
   running: 'bg-status-running/15 text-status-running',
   done: 'bg-status-done/15 text-status-done',

@@ -13,6 +13,7 @@ import logging
 import math
 import time
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
@@ -144,26 +145,49 @@ async def _engine_json(client: httpx.AsyncClient, endpoint: str, payload: JsonOb
     return data
 
 
-async def submit(params: JsonObject, title: str, voice_id: str | None, audio: UploadFile | None) -> AceJobReleaseResponse:
+def _audio_part(audio: UploadFile) -> tuple[str, BinaryIO, str | None]:
+    """Bound each independent native upload without buffering it in memory."""
+    filename = Path((audio.filename or 'reference.wav').replace('\\', '/')).name
+    if Path(filename).suffix.lower() not in {'.wav', '.flac', '.mp3', '.ogg', '.m4a', '.aac', '.aif', '.aiff', '.opus'}:
+        raise HTTPException(status_code=422, detail='invalid_reference_audio')
+    position = audio.file.tell()
+    audio.file.seek(0, 2)
+    size = audio.file.tell()
+    audio.file.seek(position)
+    if not 0 < size <= 512 * 1024 ** 2:
+        raise HTTPException(status_code=422, detail='invalid_reference_audio')
+    return filename, audio.file, audio.content_type
+
+
+async def submit(params: JsonObject, title: str, voice_id: str | None, audio: UploadFile | None,
+                 style_audio: UploadFile | None = None) -> AceJobReleaseResponse:
     if not _engine_running():
         raise HTTPException(status_code=503, detail='model_inactive')
     validated = AceSubmitParams.model_validate(params)
     # Retain a lossless source for independent voice versions and exports.
     # Internal metadata is server-owned and must never reach the native engine.
-    clean = {key: value for key, value in params.items() if key not in {'_source_audio_format', '_encoding_settings'}}
+    snapshot = params.get('_generation_settings')
+    clean = {key: value for key, value in params.items() if key not in {'_source_audio_format', '_encoding_settings', '_generation_settings'}}
     engine_params: JsonObject = {**clean, 'audio_format': 'wav', 'batch_size': validated.batch_size}
     params = {**clean, 'audio_format': validated.audio_format, 'batch_size': validated.batch_size,
               '_source_audio_format': 'wav', '_encoding_settings': _object.validate_json(load_settings().model_dump_json())}
+    if isinstance(snapshot, dict):
+        params['_generation_settings'] = snapshot
     if voice_id:
         voice = public_voice(voice_id)
         if not voice.get('usable'):
             raise HTTPException(status_code=409, detail='voice_not_ready')
     async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-        if audio is None:
+        if audio is None and style_audio is None:
             result = await _engine_json(client, '/release_task', engine_params)
         else:
             fields = {key: json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value) for key, value in engine_params.items() if value is not None}
-            response = await client.post(MODELS['ace_step'].proxy_target + '/release_task', data=fields, files={'ctx_audio': (Path(audio.filename or 'context.wav').name, audio.file, audio.content_type)})
+            files: dict[str, tuple[str, BinaryIO, str | None]] = {}
+            if audio is not None:
+                files['ctx_audio'] = _audio_part(audio)
+            if style_audio is not None:
+                files['ref_audio'] = _audio_part(style_audio)
+            response = await client.post(MODELS['ace_step'].proxy_target + '/release_task', data=fields, files=files)
             response.raise_for_status()
             wrapped = _object.validate_json(response.content)
             if wrapped.get('code', 200) not in (0, 200):

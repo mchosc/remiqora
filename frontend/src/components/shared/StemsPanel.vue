@@ -8,6 +8,7 @@ import * as projectsApi from '../../api/projects'
 import { decodeStem, defaultChannelSettings, defaultMasterSettings } from '../../audio/mixerEngine'
 import type { TimelineProject, TimelineLane, Clip } from '../../audio/timelineTypes'
 import WaveformPlayer from './WaveformPlayer.vue'
+import StemExportControls from './StemExportControls.vue'
 import type { SavedTrack } from '../../api/contracts'
 import { createPollingLoop } from '../../composables/polling'
 
@@ -178,7 +179,7 @@ onBeforeUnmount(() => {
       <span aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
     </button>
 
-    <div v-if="expanded" class="space-y-2 border-t border-border/60 p-3">
+    <div v-show="expanded" class="space-y-2 border-t border-border/60 p-3">
       <button
         v-if="status === 'idle' || status === 'failed' || status === 'cancelled'"
         type="button"
@@ -206,6 +207,7 @@ onBeforeUnmount(() => {
           <p class="text-xs text-text-dim">{{ STEM_LABELS[name] }}</p>
           <WaveformPlayer compact :src="stemUrls[name]" />
           <button type="button" class="text-xs text-accent1 hover:underline" @click="download(name, stemUrls![name])">{{ t('stemsPanel.download') }}</button>
+          <StemExportControls :track-id="trackId" :stem-name="name" />
         </div>
         <div class="flex gap-2">
           <button type="button" class="accent-gradient rounded-lg px-2.5 py-1 text-xs font-medium text-white" @click="start(true)">{{ t('stemsPanel.recreate') }}</button>

@@ -1,6 +1,7 @@
 'use strict';
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 /** Tiny per-user settings file in Electron's userData folder (the data root itself can live on another drive). */
 async function loadConfig(dir) {
@@ -27,9 +28,9 @@ async function updateConfig(dir, patch) {
 /** The data root must be creatable and writable before anything is downloaded into it. */
 async function ensureWritableDir(dir) {
   await fsp.mkdir(dir, { recursive: true });
-  const probe = path.join(dir, '.write-test');
-  await fsp.writeFile(probe, 'ok');
-  await fsp.rm(probe, { force: true });
+  const probe = path.join(dir, `.write-test-${crypto.randomUUID()}`);
+  try { await fsp.writeFile(probe, 'ok', { flag: 'wx' }); }
+  finally { await fsp.rm(probe, { force: true }); }
 }
 
 module.exports = { loadConfig, saveConfig, updateConfig, ensureWritableDir };

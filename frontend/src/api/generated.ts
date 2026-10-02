@@ -9,6 +9,44 @@ export type AceAdoptRequest = {
   "track_ids"?: Array<number>
 }
 
+export type AceGenerationSettings = {
+  "referenceImportId": (string | null)
+  "engine": "ace_step"
+  "mode": "simple" | "custom"
+  "simpleQuery": string
+  "customPrompt": string
+  "instrumental": boolean
+  "customLyrics": string
+  "duration": number
+  "durationAuto": boolean
+  "audioFormat": "mp3" | "wav" | "flac"
+  "bpm": (number | null)
+  "keyScale": string
+  "timeSignature": string
+  "vocalLanguage": string
+  "inferenceSteps": (number | null)
+  "guidanceScale": (number | null)
+  "selectedModel": string
+  "seed": (number | null)
+  "randomSeed": boolean
+  "batchSize": number
+  "useRefAudio": boolean
+  "taskType": "text2music" | "cover" | "repaint" | "extract" | "lego" | "complete"
+  "repaintStart": (number | null)
+  "repaintEnd": (number | null)
+  "trackName": string
+  "trackClasses": Array<string>
+  "coverStrength": number
+  "voiceId": (string | null)
+  "useCotCaption": boolean
+  "styleReferenceRequiresReupload": boolean
+  "sourceReferenceName": (string | null)
+  "styleReferenceName": (string | null)
+  "loraRequiresReselection": boolean
+  "loraName": (string | null)
+  "loraScale": number
+}
+
 export type AceJobQueryResponse = {
   "data": Array<AceJobResponse>
 }
@@ -80,7 +118,6 @@ export type AudioEncodingSettings = {
 export type AudioExportResponse = {
   "id": string
   "track_id": number
-  "version_id": string
   "format": "mp3" | "wav" | "flac"
   "status": "queued" | "running" | "done" | "failed" | "cancelled"
   "error_code"?: string
@@ -88,6 +125,7 @@ export type AudioExportResponse = {
   "filename"?: (string | null)
   "audio_url"?: (string | null)
   "settings": AudioEncodingSettings
+  "version_id": string
 }
 
 export type AudioExportsResponse = {
@@ -132,6 +170,16 @@ export type CreateAudioVersionRequest = {
   "voice_id": string
 }
 
+export type CreateGenerationPresetRequest = {
+  "name": string
+  "settings": (AceGenerationSettings | YueGenerationSettings)
+  "source_history_id": (string | null)
+}
+
+export type CreateStemExportRequest = {
+  "format"?: "mp3" | "wav" | "flac"
+}
+
 export type CreateVideoProjectRequest = {
   "track_id": number
   "name"?: string
@@ -157,11 +205,99 @@ export type CreateVoiceRequest = {
   "name": string
 }
 
+export type DeleteYueJobResponse = {
+  "deleted": boolean
+}
+
+export type DuplicateGenerationPresetRequest = {
+  "name": string
+  "revision": number
+}
+
 export type FlacEncodingSettings = {
   "bit_depth"?: 16 | 24
   "compression_level"?: number
   "sample_rate"?: 44100 | 48000
   "channels"?: 1 | 2
+}
+
+export type GenerationAbcSamplingSettings = {
+  "temperature": (number | null)
+  "top_p": (number | null)
+  "top_k": (number | null)
+  "repetition_penalty": (number | null)
+  "penalty_window": (number | null)
+  "min_tokens": (number | null)
+  "max_tokens": (number | null)
+}
+
+export type GenerationDeleteResponse = {
+  "deleted": true
+}
+
+export type GenerationHistoryEntry = {
+  "id": string
+  "engine": "ace_step" | "yue2"
+  "created_at": string
+  "title": string
+  "lyrics": string
+  "seed": (number | null)
+  "track_id": (number | null)
+  "settings": (AceGenerationSettings | YueGenerationSettings)
+  "reference_requires_reupload": boolean
+}
+
+export type GenerationHistoryResponse = {
+  "data": Array<GenerationHistoryEntry>
+  "total": number
+  "retention_limit": number
+}
+
+export type GenerationLibrarySettings = {
+  "history_limit": number
+  "revision": number
+}
+
+export type GenerationPreset = {
+  "id": string
+  "name": string
+  "engine": "ace_step" | "yue2"
+  "settings": (AceGenerationSettings | YueGenerationSettings)
+  "revision": number
+  "created_at": string
+  "updated_at": string
+  "source_history_id": (string | null)
+}
+
+export type GenerationPresetImportResponse = {
+  "data": Array<GenerationPreset>
+  "imported": number
+}
+
+export type GenerationPresetsResponse = {
+  "data": Array<GenerationPreset>
+  "total": number
+}
+
+export type GenerationSamplingSettings = {
+  "temperature": (number | null)
+  "top_p": (number | null)
+  "top_k": (number | null)
+  "repetition_penalty": (number | null)
+  "penalty_window": (number | null)
+  "min_tokens": (number | null)
+  "max_tokens": (number | null)
+}
+
+export type ImportGenerationPreset = {
+  "name": string
+  "settings": (AceGenerationSettings | YueGenerationSettings)
+  "source_history_id": (string | null)
+  "legacy_key": string
+}
+
+export type ImportGenerationPresetsRequest = {
+  "presets": Array<ImportGenerationPreset>
 }
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -283,6 +419,129 @@ export type ProjectsResponse = {
   "data": Array<ProjectSummaryResponse>
 }
 
+export type ReferenceAbcRequest = {
+  "abc": string
+  "transpose_semitones"?: number
+  "tempo_bpm"?: (number | null)
+  "target_min_midi"?: (number | null)
+  "target_max_midi"?: (number | null)
+}
+
+export type ReferenceAbcResponse = {
+  "abc": string
+  "note_count": number
+  "min_midi": number
+  "max_midi": number
+  "applied_transpose_semitones": number
+}
+
+export type ReferenceCapabilities = {
+  "source_import": ReferenceToolCapability
+  "subtitles": ReferenceToolCapability
+  "whisper": ReferenceToolCapability
+  "separation": Array<ReferenceSeparationCapability>
+  "melody": ReferenceToolCapability
+  "max_duration_seconds"?: number
+  "max_source_bytes"?: number
+}
+
+export type ReferenceDeleteResponse = {
+  "deleted": boolean
+  "track_retained": boolean
+}
+
+export type ReferenceImport = {
+  "id": string
+  "status": "queued" | "running" | "done" | "partial" | "failed" | "cancelled"
+  "request": (ReferenceImportRequest | ReferenceTrackPreparationRequest)
+  "source"?: (ReferenceSource | null)
+  "track_id"?: (number | null)
+  "audio_url"?: (string | null)
+  "vocal_audio_url"?: (string | null)
+  "stages": Array<ReferenceStage>
+  "lyrics"?: (ReferenceLyrics | null)
+  "abc"?: (string | null)
+  "created_at": string
+  "updated_at": string
+}
+
+export type ReferenceImportRequest = {
+  "url": string
+  "kind"?: "url"
+  "title"?: string
+  "lyrics_source"?: "none" | "subtitles" | "whisper"
+  "subtitle_language"?: (string | null)
+  "separation"?: "none" | "fast" | "high" | "roformer"
+  "melody"?: boolean
+}
+
+export type ReferenceImportsResponse = {
+  "imports": Array<ReferenceImport>
+}
+
+export type ReferenceLyricLine = {
+  "text": string
+  "start_seconds"?: (number | null)
+  "end_seconds"?: (number | null)
+  "language"?: (string | null)
+  "provenance"?: "provided_subtitles" | "whisper" | "user_text"
+}
+
+export type ReferenceLyrics = {
+  "lyrics": string
+  "lines": Array<ReferenceLyricLine>
+  "warnings"?: Array<string>
+}
+
+export type ReferenceLyricsRequest = {
+  "text": string
+  "format"?: "plain" | "srt" | "vtt"
+  "language"?: (string | null)
+  "section_size"?: number
+}
+
+export type ReferenceProbeRequest = {
+  "url": string
+}
+
+export type ReferenceSeparationCapability = {
+  "available": boolean
+  "reason"?: ("invalid_url" | "provider_not_allowed" | "private_address" | "redirect_blocked" | "network_failed" | "network_limit" | "duration_limit" | "size_limit" | "yt_dlp_missing" | "ffmpeg_missing" | "subtitle_language_required" | "subtitle_language_unavailable" | "subtitles_unavailable" | "unsupported_subtitles" | "whisper_missing" | "whisper_model_missing" | "separation_unavailable" | "melody_unavailable" | "tool_failed" | "tool_timeout" | "invalid_audio" | "source_missing" | "track_missing" | "import_interrupted" | "import_failed" | "invalid_abc" | "unsupported_abc" | "range_unavailable" | "lyrics_empty" | "busy" | null)
+  "setup_hint"?: string
+  "id": "fast" | "high" | "roformer"
+}
+
+export type ReferenceSource = {
+  "provider"?: "youtube"
+  "canonical_url": string
+  "video_id": string
+  "title": string
+  "duration_seconds": number
+  "subtitle_languages"?: Array<string>
+}
+
+export type ReferenceStage = {
+  "name": "download" | "lyrics" | "separation" | "melody"
+  "status": "queued" | "running" | "done" | "skipped" | "failed" | "missing_tool" | "cancelled"
+  "error_code"?: ("invalid_url" | "provider_not_allowed" | "private_address" | "redirect_blocked" | "network_failed" | "network_limit" | "duration_limit" | "size_limit" | "yt_dlp_missing" | "ffmpeg_missing" | "subtitle_language_required" | "subtitle_language_unavailable" | "subtitles_unavailable" | "unsupported_subtitles" | "whisper_missing" | "whisper_model_missing" | "separation_unavailable" | "melody_unavailable" | "tool_failed" | "tool_timeout" | "invalid_audio" | "source_missing" | "track_missing" | "import_interrupted" | "import_failed" | "invalid_abc" | "unsupported_abc" | "range_unavailable" | "lyrics_empty" | "busy" | null)
+}
+
+export type ReferenceToolCapability = {
+  "available": boolean
+  "reason"?: ("invalid_url" | "provider_not_allowed" | "private_address" | "redirect_blocked" | "network_failed" | "network_limit" | "duration_limit" | "size_limit" | "yt_dlp_missing" | "ffmpeg_missing" | "subtitle_language_required" | "subtitle_language_unavailable" | "subtitles_unavailable" | "unsupported_subtitles" | "whisper_missing" | "whisper_model_missing" | "separation_unavailable" | "melody_unavailable" | "tool_failed" | "tool_timeout" | "invalid_audio" | "source_missing" | "track_missing" | "import_interrupted" | "import_failed" | "invalid_abc" | "unsupported_abc" | "range_unavailable" | "lyrics_empty" | "busy" | null)
+  "setup_hint"?: string
+}
+
+export type ReferenceTrackPreparationRequest = {
+  "kind"?: "track"
+  "track_id": number
+  "source_version_id"?: (string | null)
+  "lyrics_source"?: "none" | "whisper"
+  "subtitle_language"?: (string | null)
+  "separation"?: "none" | "fast" | "high" | "roformer"
+  "melody"?: boolean
+}
+
 export type SavedTrack = {
   "id": number
   "short_id": (number | null)
@@ -324,6 +583,23 @@ export type ShotRequest = {
   "prompt"?: string
 }
 
+export type StemAudioExportResponse = {
+  "id": string
+  "track_id": number
+  "format": "mp3" | "wav" | "flac"
+  "status": "queued" | "running" | "done" | "failed" | "cancelled"
+  "error_code"?: string
+  "created_at": string
+  "filename"?: (string | null)
+  "audio_url"?: (string | null)
+  "settings": AudioEncodingSettings
+  "stem_name": "vocals" | "drums" | "bass" | "other"
+}
+
+export type StemAudioExportsResponse = {
+  "exports"?: Array<StemAudioExportResponse>
+}
+
 export type StemsStatusResponse = {
   "status": "idle" | "queued" | "running" | "done" | "failed" | "cancelled"
   "error": (string | null)
@@ -351,6 +627,18 @@ export type TrackAudioVersionsResponse = {
 
 export type TracksResponse = {
   "data": Array<SavedTrack>
+}
+
+export type UpdateGenerationLibrarySettingsRequest = {
+  "history_limit": number
+  "revision": number
+}
+
+export type UpdateGenerationPresetRequest = {
+  "name": string
+  "settings": (AceGenerationSettings | YueGenerationSettings)
+  "source_history_id": (string | null)
+  "revision": number
 }
 
 export type UpdateVideoProjectRequest = {
@@ -906,6 +1194,92 @@ export type Yue2ModelSpecs = {
   "yue2": Yue2ModelSpecConfig
   "sheetsage2": Yue2ModelSpecConfig
   "muscriptor": Yue2ModelSpecConfig
+}
+
+export type YueGenerationSettings = {
+  "referenceImportId": (string | null)
+  "engine": "yue2"
+  "lyrics": string
+  "style": string
+  "cot": "off" | "melody" | "full"
+  "precision": "q8_0" | "q4_0"
+  "abc": string
+  "cfgScale": (number | null)
+  "numInferenceSteps": (number | null)
+  "semantic": GenerationSamplingSettings
+  "abcSampling": GenerationAbcSamplingSettings
+  "seed": (number | null)
+  "randomSeed": boolean
+  "batchSize": number
+  "voiceId": (string | null)
+  "referenceRequiresReupload": boolean
+}
+
+export type YueJobResponse = {
+  "native_progress_available": boolean
+  "id": string
+  "status": "queued" | "running" | "stopping" | "done" | "failed" | "cancelled"
+  "stage": string
+  "queue_reason": string
+  "created_at": string
+  "started_at": (string | null)
+  "elapsed_seconds": number
+  "phase_eta_seconds": (number | null)
+  "progress": (YueNativeProgress | null)
+  "title": string
+  "lyrics": string
+  "seed": number
+  "precision": "q8_0" | "q4_0"
+  "options": YueOptions
+  "voice_id": (string | null)
+  "error_code": string
+  "track": (SavedTrack | null)
+}
+
+export type YueJobsResponse = {
+  "jobs": Array<YueJobResponse>
+}
+
+export type YueNativeProgress = {
+  "run_id": string
+  "phase": "planning" | "semantic" | "acoustic" | "decode" | "done"
+  "current": number
+  "total": (number | null)
+  "started_ms": number
+  "phase_started_ms": number
+  "updated_ms": number
+}
+
+export type YueOptions = {
+  "style": string
+  "cot": "off" | "melody" | "full"
+  "cfg_scale": (number | null)
+  "num_inference_steps": number
+  "abc": (string | null)
+  "semantic_temperature": (number | null)
+  "semantic_top_p": (number | null)
+  "semantic_top_k": (number | null)
+  "semantic_repetition_penalty": (number | null)
+  "semantic_penalty_window": (number | null)
+  "semantic_min_tokens": (number | null)
+  "semantic_max_tokens": (number | null)
+  "abc_temperature": (number | null)
+  "abc_top_p": (number | null)
+  "abc_top_k": (number | null)
+  "abc_repetition_penalty": (number | null)
+  "abc_penalty_window": (number | null)
+  "abc_min_tokens": (number | null)
+  "abc_max_tokens": (number | null)
+}
+
+export type YueSubmitRequest = {
+  "title": string
+  "lyrics": string
+  "seed": number
+  "options": YueOptions
+  "precision": "q8_0" | "q4_0"
+  "voice_id": (string | null)
+  "settings": (YueGenerationSettings | null)
 }
 
 export type JsonObject = Record<string, JsonValue>
@@ -1924,10 +2298,106 @@ const schemas = {
         "title": "Track Id",
         "type": "integer"
       },
+      "format": {
+        "enum": [
+          "mp3",
+          "wav",
+          "flac"
+        ],
+        "title": "Format",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "failed",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "error_code": {
+        "default": "",
+        "title": "Error Code",
+        "type": "string"
+      },
+      "created_at": {
+        "title": "Created At",
+        "type": "string"
+      },
+      "filename": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Filename"
+      },
+      "audio_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Audio Url"
+      },
+      "settings": {
+        "$ref": "#/$defs/AudioEncodingSettings"
+      },
       "version_id": {
         "pattern": "^[0-9a-f]{32}$",
         "title": "Version Id",
         "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "track_id",
+      "format",
+      "status",
+      "created_at",
+      "settings",
+      "version_id"
+    ],
+    "title": "AudioExportResponse",
+    "type": "object"
+  },
+  "AudioExportsResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "exports": {
+        "items": {
+          "$ref": "#/$defs/AudioExportResponse"
+        },
+        "title": "Exports",
+        "type": "array"
+      }
+    },
+    "title": "AudioExportsResponse",
+    "type": "object"
+  },
+  "StemAudioExportResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "track_id": {
+        "exclusiveMinimum": 0,
+        "title": "Track Id",
+        "type": "integer"
       },
       "format": {
         "enum": [
@@ -1984,32 +2454,59 @@ const schemas = {
       },
       "settings": {
         "$ref": "#/$defs/AudioEncodingSettings"
+      },
+      "stem_name": {
+        "enum": [
+          "vocals",
+          "drums",
+          "bass",
+          "other"
+        ],
+        "title": "Stem Name",
+        "type": "string"
       }
     },
     "required": [
       "id",
       "track_id",
-      "version_id",
       "format",
       "status",
       "created_at",
-      "settings"
+      "settings",
+      "stem_name"
     ],
-    "title": "AudioExportResponse",
+    "title": "StemAudioExportResponse",
     "type": "object"
   },
-  "AudioExportsResponse": {
+  "StemAudioExportsResponse": {
     "additionalProperties": false,
     "properties": {
       "exports": {
         "items": {
-          "$ref": "#/$defs/AudioExportResponse"
+          "$ref": "#/$defs/StemAudioExportResponse"
         },
         "title": "Exports",
         "type": "array"
       }
     },
-    "title": "AudioExportsResponse",
+    "title": "StemAudioExportsResponse",
+    "type": "object"
+  },
+  "CreateStemExportRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "format": {
+        "default": "mp3",
+        "enum": [
+          "mp3",
+          "wav",
+          "flac"
+        ],
+        "title": "Format",
+        "type": "string"
+      }
+    },
+    "title": "CreateStemExportRequest",
     "type": "object"
   },
   "VideoEnergyPoint": {
@@ -6106,6 +6603,2721 @@ const schemas = {
     ],
     "title": "TrackActivityResponse",
     "type": "object"
+  },
+  "GenerationSamplingSettings": {
+    "additionalProperties": false,
+    "properties": {
+      "temperature": {
+        "anyOf": [
+          {
+            "maximum": 5,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Temperature"
+      },
+      "top_p": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Top P"
+      },
+      "top_k": {
+        "anyOf": [
+          {
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Top K"
+      },
+      "repetition_penalty": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Repetition Penalty"
+      },
+      "penalty_window": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Penalty Window"
+      },
+      "min_tokens": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Min Tokens"
+      },
+      "max_tokens": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Max Tokens"
+      }
+    },
+    "required": [
+      "temperature",
+      "top_p",
+      "top_k",
+      "repetition_penalty",
+      "penalty_window",
+      "min_tokens",
+      "max_tokens"
+    ],
+    "title": "GenerationSamplingSettings",
+    "type": "object"
+  },
+  "AceGenerationSettings": {
+    "additionalProperties": false,
+    "properties": {
+      "referenceImportId": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Referenceimportid"
+      },
+      "engine": {
+        "const": "ace_step",
+        "title": "Engine",
+        "type": "string"
+      },
+      "mode": {
+        "default": "simple",
+        "enum": [
+          "simple",
+          "custom"
+        ],
+        "title": "Mode",
+        "type": "string"
+      },
+      "simpleQuery": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Simplequery",
+        "type": "string"
+      },
+      "customPrompt": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Customprompt",
+        "type": "string"
+      },
+      "instrumental": {
+        "default": false,
+        "title": "Instrumental",
+        "type": "boolean"
+      },
+      "customLyrics": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Customlyrics",
+        "type": "string"
+      },
+      "duration": {
+        "default": 120,
+        "maximum": 300,
+        "minimum": 10,
+        "title": "Duration",
+        "type": "number"
+      },
+      "durationAuto": {
+        "default": true,
+        "title": "Durationauto",
+        "type": "boolean"
+      },
+      "audioFormat": {
+        "default": "mp3",
+        "enum": [
+          "mp3",
+          "wav",
+          "flac"
+        ],
+        "title": "Audioformat",
+        "type": "string"
+      },
+      "bpm": {
+        "anyOf": [
+          {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Bpm"
+      },
+      "keyScale": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Keyscale",
+        "type": "string"
+      },
+      "timeSignature": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Timesignature",
+        "type": "string"
+      },
+      "vocalLanguage": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Vocallanguage",
+        "type": "string"
+      },
+      "inferenceSteps": {
+        "anyOf": [
+          {
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Inferencesteps"
+      },
+      "guidanceScale": {
+        "anyOf": [
+          {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Guidancescale"
+      },
+      "selectedModel": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Selectedmodel",
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Seed"
+      },
+      "randomSeed": {
+        "default": true,
+        "title": "Randomseed",
+        "type": "boolean"
+      },
+      "batchSize": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "title": "Batchsize",
+        "type": "integer"
+      },
+      "useRefAudio": {
+        "default": false,
+        "title": "Userefaudio",
+        "type": "boolean"
+      },
+      "taskType": {
+        "default": "text2music",
+        "enum": [
+          "text2music",
+          "cover",
+          "repaint",
+          "extract",
+          "lego",
+          "complete"
+        ],
+        "title": "Tasktype",
+        "type": "string"
+      },
+      "repaintStart": {
+        "anyOf": [
+          {
+            "maximum": 86400,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Repaintstart"
+      },
+      "repaintEnd": {
+        "anyOf": [
+          {
+            "maximum": 86400,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Repaintend"
+      },
+      "trackName": {
+        "default": "vocals",
+        "maxLength": 500,
+        "title": "Trackname",
+        "type": "string"
+      },
+      "trackClasses": {
+        "items": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "maxItems": 100,
+        "title": "Trackclasses",
+        "type": "array"
+      },
+      "coverStrength": {
+        "default": 1,
+        "maximum": 1,
+        "minimum": 0,
+        "title": "Coverstrength",
+        "type": "number"
+      },
+      "voiceId": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Voiceid"
+      },
+      "useCotCaption": {
+        "default": true,
+        "title": "Usecotcaption",
+        "type": "boolean"
+      },
+      "styleReferenceRequiresReupload": {
+        "default": false,
+        "title": "Stylereferencerequiresreupload",
+        "type": "boolean"
+      },
+      "sourceReferenceName": {
+        "anyOf": [
+          {
+            "maxLength": 500,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Sourcereferencename"
+      },
+      "styleReferenceName": {
+        "anyOf": [
+          {
+            "maxLength": 500,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Stylereferencename"
+      },
+      "loraRequiresReselection": {
+        "default": false,
+        "title": "Lorarequiresreselection",
+        "type": "boolean"
+      },
+      "loraName": {
+        "anyOf": [
+          {
+            "maxLength": 500,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Loraname"
+      },
+      "loraScale": {
+        "default": 1,
+        "maximum": 2,
+        "minimum": 0,
+        "title": "Lorascale",
+        "type": "number"
+      }
+    },
+    "required": [
+      "referenceImportId",
+      "engine",
+      "mode",
+      "simpleQuery",
+      "customPrompt",
+      "instrumental",
+      "customLyrics",
+      "duration",
+      "durationAuto",
+      "audioFormat",
+      "bpm",
+      "keyScale",
+      "timeSignature",
+      "vocalLanguage",
+      "inferenceSteps",
+      "guidanceScale",
+      "selectedModel",
+      "seed",
+      "randomSeed",
+      "batchSize",
+      "useRefAudio",
+      "taskType",
+      "repaintStart",
+      "repaintEnd",
+      "trackName",
+      "trackClasses",
+      "coverStrength",
+      "voiceId",
+      "useCotCaption",
+      "styleReferenceRequiresReupload",
+      "sourceReferenceName",
+      "styleReferenceName",
+      "loraRequiresReselection",
+      "loraName",
+      "loraScale"
+    ],
+    "title": "AceGenerationSettings",
+    "type": "object"
+  },
+  "GenerationAbcSamplingSettings": {
+    "additionalProperties": false,
+    "properties": {
+      "temperature": {
+        "anyOf": [
+          {
+            "maximum": 5,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Temperature"
+      },
+      "top_p": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Top P"
+      },
+      "top_k": {
+        "anyOf": [
+          {
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Top K"
+      },
+      "repetition_penalty": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Repetition Penalty"
+      },
+      "penalty_window": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Penalty Window"
+      },
+      "min_tokens": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Min Tokens"
+      },
+      "max_tokens": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Max Tokens"
+      }
+    },
+    "required": [
+      "temperature",
+      "top_p",
+      "top_k",
+      "repetition_penalty",
+      "penalty_window",
+      "min_tokens",
+      "max_tokens"
+    ],
+    "title": "GenerationAbcSamplingSettings",
+    "type": "object"
+  },
+  "YueGenerationSettings": {
+    "additionalProperties": false,
+    "properties": {
+      "referenceImportId": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Referenceimportid"
+      },
+      "engine": {
+        "const": "yue2",
+        "title": "Engine",
+        "type": "string"
+      },
+      "lyrics": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Lyrics",
+        "type": "string"
+      },
+      "style": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Style",
+        "type": "string"
+      },
+      "cot": {
+        "default": "off",
+        "enum": [
+          "off",
+          "melody",
+          "full"
+        ],
+        "title": "Cot",
+        "type": "string"
+      },
+      "precision": {
+        "default": "q8_0",
+        "enum": [
+          "q8_0",
+          "q4_0"
+        ],
+        "title": "Precision",
+        "type": "string"
+      },
+      "abc": {
+        "default": "",
+        "maxLength": 100000,
+        "title": "Abc",
+        "type": "string"
+      },
+      "cfgScale": {
+        "anyOf": [
+          {
+            "maximum": 20,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Cfgscale"
+      },
+      "numInferenceSteps": {
+        "anyOf": [
+          {
+            "maximum": 256,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Numinferencesteps"
+      },
+      "semantic": {
+        "$ref": "#/$defs/GenerationSamplingSettings"
+      },
+      "abcSampling": {
+        "$ref": "#/$defs/GenerationAbcSamplingSettings"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Seed"
+      },
+      "randomSeed": {
+        "default": false,
+        "title": "Randomseed",
+        "type": "boolean"
+      },
+      "batchSize": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "title": "Batchsize",
+        "type": "integer"
+      },
+      "voiceId": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Voiceid"
+      },
+      "referenceRequiresReupload": {
+        "default": false,
+        "title": "Referencerequiresreupload",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "referenceImportId",
+      "engine",
+      "lyrics",
+      "style",
+      "cot",
+      "precision",
+      "abc",
+      "cfgScale",
+      "numInferenceSteps",
+      "semantic",
+      "abcSampling",
+      "seed",
+      "randomSeed",
+      "batchSize",
+      "voiceId",
+      "referenceRequiresReupload"
+    ],
+    "title": "YueGenerationSettings",
+    "type": "object"
+  },
+  "GenerationHistoryEntry": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "engine": {
+        "enum": [
+          "ace_step",
+          "yue2"
+        ],
+        "title": "Engine",
+        "type": "string"
+      },
+      "created_at": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Created At",
+        "type": "string"
+      },
+      "title": {
+        "maxLength": 500,
+        "title": "Title",
+        "type": "string"
+      },
+      "lyrics": {
+        "maxLength": 100000,
+        "title": "Lyrics",
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Seed"
+      },
+      "track_id": {
+        "anyOf": [
+          {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Track Id"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AceGenerationSettings"
+          },
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          }
+        ],
+        "title": "Settings"
+      },
+      "reference_requires_reupload": {
+        "title": "Reference Requires Reupload",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "id",
+      "engine",
+      "created_at",
+      "title",
+      "lyrics",
+      "seed",
+      "track_id",
+      "settings",
+      "reference_requires_reupload"
+    ],
+    "title": "GenerationHistoryEntry",
+    "type": "object"
+  },
+  "GenerationHistoryResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "items": {
+          "$ref": "#/$defs/GenerationHistoryEntry"
+        },
+        "title": "Data",
+        "type": "array"
+      },
+      "total": {
+        "maximum": 10000,
+        "minimum": 0,
+        "title": "Total",
+        "type": "integer"
+      },
+      "retention_limit": {
+        "maximum": 10000,
+        "minimum": 1,
+        "title": "Retention Limit",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "data",
+      "total",
+      "retention_limit"
+    ],
+    "title": "GenerationHistoryResponse",
+    "type": "object"
+  },
+  "GenerationLibrarySettings": {
+    "additionalProperties": false,
+    "properties": {
+      "history_limit": {
+        "default": 100,
+        "maximum": 10000,
+        "minimum": 1,
+        "title": "History Limit",
+        "type": "integer"
+      },
+      "revision": {
+        "default": 1,
+        "maximum": 9007199254740991,
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "history_limit",
+      "revision"
+    ],
+    "title": "GenerationLibrarySettings",
+    "type": "object"
+  },
+  "UpdateGenerationLibrarySettingsRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "history_limit": {
+        "maximum": 10000,
+        "minimum": 1,
+        "title": "History Limit",
+        "type": "integer"
+      },
+      "revision": {
+        "maximum": 9007199254740991,
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "history_limit",
+      "revision"
+    ],
+    "title": "UpdateGenerationLibrarySettingsRequest",
+    "type": "object"
+  },
+  "GenerationPreset": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "engine": {
+        "enum": [
+          "ace_step",
+          "yue2"
+        ],
+        "title": "Engine",
+        "type": "string"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AceGenerationSettings"
+          },
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          }
+        ],
+        "title": "Settings"
+      },
+      "revision": {
+        "maximum": 9007199254740991,
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "created_at": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Created At",
+        "type": "string"
+      },
+      "updated_at": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Updated At",
+        "type": "string"
+      },
+      "source_history_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Source History Id"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "engine",
+      "settings",
+      "revision",
+      "created_at",
+      "updated_at",
+      "source_history_id"
+    ],
+    "title": "GenerationPreset",
+    "type": "object"
+  },
+  "GenerationPresetsResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "items": {
+          "$ref": "#/$defs/GenerationPreset"
+        },
+        "title": "Data",
+        "type": "array"
+      },
+      "total": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Total",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "data",
+      "total"
+    ],
+    "title": "GenerationPresetsResponse",
+    "type": "object"
+  },
+  "CreateGenerationPresetRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AceGenerationSettings"
+          },
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          }
+        ],
+        "title": "Settings"
+      },
+      "source_history_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Source History Id"
+      }
+    },
+    "required": [
+      "name",
+      "settings",
+      "source_history_id"
+    ],
+    "title": "CreateGenerationPresetRequest",
+    "type": "object"
+  },
+  "UpdateGenerationPresetRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AceGenerationSettings"
+          },
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          }
+        ],
+        "title": "Settings"
+      },
+      "source_history_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Source History Id"
+      },
+      "revision": {
+        "maximum": 9007199254740991,
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "name",
+      "settings",
+      "source_history_id",
+      "revision"
+    ],
+    "title": "UpdateGenerationPresetRequest",
+    "type": "object"
+  },
+  "DuplicateGenerationPresetRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "revision": {
+        "maximum": 9007199254740991,
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "name",
+      "revision"
+    ],
+    "title": "DuplicateGenerationPresetRequest",
+    "type": "object"
+  },
+  "ImportGenerationPreset": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AceGenerationSettings"
+          },
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          }
+        ],
+        "title": "Settings"
+      },
+      "source_history_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Source History Id"
+      },
+      "legacy_key": {
+        "maxLength": 500,
+        "minLength": 1,
+        "title": "Legacy Key",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "settings",
+      "source_history_id",
+      "legacy_key"
+    ],
+    "title": "ImportGenerationPreset",
+    "type": "object"
+  },
+  "ImportGenerationPresetsRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "presets": {
+        "items": {
+          "$ref": "#/$defs/ImportGenerationPreset"
+        },
+        "maxItems": 1000,
+        "title": "Presets",
+        "type": "array"
+      }
+    },
+    "required": [
+      "presets"
+    ],
+    "title": "ImportGenerationPresetsRequest",
+    "type": "object"
+  },
+  "GenerationPresetImportResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "items": {
+          "$ref": "#/$defs/GenerationPreset"
+        },
+        "title": "Data",
+        "type": "array"
+      },
+      "imported": {
+        "maximum": 1000,
+        "minimum": 0,
+        "title": "Imported",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "data",
+      "imported"
+    ],
+    "title": "GenerationPresetImportResponse",
+    "type": "object"
+  },
+  "GenerationDeleteResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "deleted": {
+        "const": true,
+        "default": true,
+        "title": "Deleted",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "GenerationDeleteResponse",
+    "type": "object"
+  },
+  "YueOptions": {
+    "additionalProperties": false,
+    "properties": {
+      "style": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "title": "Style",
+        "type": "string"
+      },
+      "cot": {
+        "default": "off",
+        "enum": [
+          "off",
+          "melody",
+          "full"
+        ],
+        "title": "Cot",
+        "type": "string"
+      },
+      "cfg_scale": {
+        "anyOf": [
+          {
+            "maximum": 20,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Cfg Scale"
+      },
+      "num_inference_steps": {
+        "default": 8,
+        "maximum": 256,
+        "minimum": 1,
+        "title": "Num Inference Steps",
+        "type": "integer"
+      },
+      "abc": {
+        "anyOf": [
+          {
+            "maxLength": 100000,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc"
+      },
+      "semantic_temperature": {
+        "anyOf": [
+          {
+            "maximum": 5,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Temperature"
+      },
+      "semantic_top_p": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Top P"
+      },
+      "semantic_top_k": {
+        "anyOf": [
+          {
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Top K"
+      },
+      "semantic_repetition_penalty": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Repetition Penalty"
+      },
+      "semantic_penalty_window": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Penalty Window"
+      },
+      "semantic_min_tokens": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Min Tokens"
+      },
+      "semantic_max_tokens": {
+        "anyOf": [
+          {
+            "maximum": 9000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Semantic Max Tokens"
+      },
+      "abc_temperature": {
+        "anyOf": [
+          {
+            "maximum": 5,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Temperature"
+      },
+      "abc_top_p": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Top P"
+      },
+      "abc_top_k": {
+        "anyOf": [
+          {
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Top K"
+      },
+      "abc_repetition_penalty": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Repetition Penalty"
+      },
+      "abc_penalty_window": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Penalty Window"
+      },
+      "abc_min_tokens": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Min Tokens"
+      },
+      "abc_max_tokens": {
+        "anyOf": [
+          {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc Max Tokens"
+      }
+    },
+    "required": [
+      "style",
+      "cot",
+      "cfg_scale",
+      "num_inference_steps",
+      "abc",
+      "semantic_temperature",
+      "semantic_top_p",
+      "semantic_top_k",
+      "semantic_repetition_penalty",
+      "semantic_penalty_window",
+      "semantic_min_tokens",
+      "semantic_max_tokens",
+      "abc_temperature",
+      "abc_top_p",
+      "abc_top_k",
+      "abc_repetition_penalty",
+      "abc_penalty_window",
+      "abc_min_tokens",
+      "abc_max_tokens"
+    ],
+    "title": "YueOptions",
+    "type": "object"
+  },
+  "YueSubmitRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "title": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Title",
+        "type": "string"
+      },
+      "lyrics": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "title": "Lyrics",
+        "type": "string"
+      },
+      "seed": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "Seed",
+        "type": "integer"
+      },
+      "options": {
+        "$ref": "#/$defs/YueOptions"
+      },
+      "precision": {
+        "default": "q8_0",
+        "enum": [
+          "q8_0",
+          "q4_0"
+        ],
+        "title": "Precision",
+        "type": "string"
+      },
+      "voice_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Voice Id"
+      },
+      "settings": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/YueGenerationSettings"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "title",
+      "lyrics",
+      "seed",
+      "options",
+      "precision",
+      "voice_id",
+      "settings"
+    ],
+    "title": "YueSubmitRequest",
+    "type": "object"
+  },
+  "YueNativeProgress": {
+    "additionalProperties": false,
+    "properties": {
+      "run_id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Run Id",
+        "type": "string"
+      },
+      "phase": {
+        "enum": [
+          "planning",
+          "semantic",
+          "acoustic",
+          "decode",
+          "done"
+        ],
+        "title": "Phase",
+        "type": "string"
+      },
+      "current": {
+        "maximum": 100000000,
+        "minimum": 0,
+        "title": "Current",
+        "type": "integer"
+      },
+      "total": {
+        "anyOf": [
+          {
+            "maximum": 100000000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Total"
+      },
+      "started_ms": {
+        "minimum": 0,
+        "title": "Started Ms",
+        "type": "integer"
+      },
+      "phase_started_ms": {
+        "minimum": 0,
+        "title": "Phase Started Ms",
+        "type": "integer"
+      },
+      "updated_ms": {
+        "minimum": 0,
+        "title": "Updated Ms",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "run_id",
+      "phase",
+      "current",
+      "total",
+      "started_ms",
+      "phase_started_ms",
+      "updated_ms"
+    ],
+    "title": "YueNativeProgress",
+    "type": "object"
+  },
+  "YueJobResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "native_progress_available": {
+        "default": false,
+        "title": "Native Progress Available",
+        "type": "boolean"
+      },
+      "id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "queued",
+          "running",
+          "stopping",
+          "done",
+          "failed",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "stage": {
+        "maxLength": 120,
+        "title": "Stage",
+        "type": "string"
+      },
+      "queue_reason": {
+        "default": "",
+        "maxLength": 120,
+        "title": "Queue Reason",
+        "type": "string"
+      },
+      "created_at": {
+        "maxLength": 64,
+        "title": "Created At",
+        "type": "string"
+      },
+      "started_at": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Started At"
+      },
+      "elapsed_seconds": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Elapsed Seconds",
+        "type": "number"
+      },
+      "phase_eta_seconds": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Phase Eta Seconds"
+      },
+      "progress": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/YueNativeProgress"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "title": {
+        "maxLength": 500,
+        "title": "Title",
+        "type": "string"
+      },
+      "lyrics": {
+        "maxLength": 100000,
+        "title": "Lyrics",
+        "type": "string"
+      },
+      "seed": {
+        "title": "Seed",
+        "type": "integer"
+      },
+      "precision": {
+        "enum": [
+          "q8_0",
+          "q4_0"
+        ],
+        "title": "Precision",
+        "type": "string"
+      },
+      "options": {
+        "$ref": "#/$defs/YueOptions"
+      },
+      "voice_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Voice Id"
+      },
+      "error_code": {
+        "default": "",
+        "maxLength": 120,
+        "title": "Error Code",
+        "type": "string"
+      },
+      "track": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SavedTrack"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "native_progress_available",
+      "id",
+      "status",
+      "stage",
+      "queue_reason",
+      "created_at",
+      "started_at",
+      "elapsed_seconds",
+      "phase_eta_seconds",
+      "progress",
+      "title",
+      "lyrics",
+      "seed",
+      "precision",
+      "options",
+      "voice_id",
+      "error_code",
+      "track"
+    ],
+    "title": "YueJobResponse",
+    "type": "object"
+  },
+  "YueJobsResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "jobs": {
+        "items": {
+          "$ref": "#/$defs/YueJobResponse"
+        },
+        "title": "Jobs",
+        "type": "array"
+      }
+    },
+    "required": [
+      "jobs"
+    ],
+    "title": "YueJobsResponse",
+    "type": "object"
+  },
+  "DeleteYueJobResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "deleted": {
+        "title": "Deleted",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "DeleteYueJobResponse",
+    "type": "object"
+  },
+  "ReferenceToolCapability": {
+    "additionalProperties": false,
+    "properties": {
+      "available": {
+        "title": "Available",
+        "type": "boolean"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "enum": [
+              "invalid_url",
+              "provider_not_allowed",
+              "private_address",
+              "redirect_blocked",
+              "network_failed",
+              "network_limit",
+              "duration_limit",
+              "size_limit",
+              "yt_dlp_missing",
+              "ffmpeg_missing",
+              "subtitle_language_required",
+              "subtitle_language_unavailable",
+              "subtitles_unavailable",
+              "unsupported_subtitles",
+              "whisper_missing",
+              "whisper_model_missing",
+              "separation_unavailable",
+              "melody_unavailable",
+              "tool_failed",
+              "tool_timeout",
+              "invalid_audio",
+              "source_missing",
+              "track_missing",
+              "import_interrupted",
+              "import_failed",
+              "invalid_abc",
+              "unsupported_abc",
+              "range_unavailable",
+              "lyrics_empty",
+              "busy"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Reason"
+      },
+      "setup_hint": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Setup Hint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "available"
+    ],
+    "title": "ReferenceToolCapability",
+    "type": "object"
+  },
+  "ReferenceSeparationCapability": {
+    "additionalProperties": false,
+    "properties": {
+      "available": {
+        "title": "Available",
+        "type": "boolean"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "enum": [
+              "invalid_url",
+              "provider_not_allowed",
+              "private_address",
+              "redirect_blocked",
+              "network_failed",
+              "network_limit",
+              "duration_limit",
+              "size_limit",
+              "yt_dlp_missing",
+              "ffmpeg_missing",
+              "subtitle_language_required",
+              "subtitle_language_unavailable",
+              "subtitles_unavailable",
+              "unsupported_subtitles",
+              "whisper_missing",
+              "whisper_model_missing",
+              "separation_unavailable",
+              "melody_unavailable",
+              "tool_failed",
+              "tool_timeout",
+              "invalid_audio",
+              "source_missing",
+              "track_missing",
+              "import_interrupted",
+              "import_failed",
+              "invalid_abc",
+              "unsupported_abc",
+              "range_unavailable",
+              "lyrics_empty",
+              "busy"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Reason"
+      },
+      "setup_hint": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Setup Hint",
+        "type": "string"
+      },
+      "id": {
+        "enum": [
+          "fast",
+          "high",
+          "roformer"
+        ],
+        "title": "Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "available",
+      "id"
+    ],
+    "title": "ReferenceSeparationCapability",
+    "type": "object"
+  },
+  "ReferenceCapabilities": {
+    "additionalProperties": false,
+    "properties": {
+      "source_import": {
+        "$ref": "#/$defs/ReferenceToolCapability"
+      },
+      "subtitles": {
+        "$ref": "#/$defs/ReferenceToolCapability"
+      },
+      "whisper": {
+        "$ref": "#/$defs/ReferenceToolCapability"
+      },
+      "separation": {
+        "items": {
+          "$ref": "#/$defs/ReferenceSeparationCapability"
+        },
+        "title": "Separation",
+        "type": "array"
+      },
+      "melody": {
+        "$ref": "#/$defs/ReferenceToolCapability"
+      },
+      "max_duration_seconds": {
+        "default": 600,
+        "title": "Max Duration Seconds",
+        "type": "integer"
+      },
+      "max_source_bytes": {
+        "default": 536870912,
+        "title": "Max Source Bytes",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "source_import",
+      "subtitles",
+      "whisper",
+      "separation",
+      "melody"
+    ],
+    "title": "ReferenceCapabilities",
+    "type": "object"
+  },
+  "ReferenceProbeRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "maxLength": 2048,
+        "minLength": 1,
+        "title": "Url",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "title": "ReferenceProbeRequest",
+    "type": "object"
+  },
+  "ReferenceSource": {
+    "additionalProperties": false,
+    "properties": {
+      "provider": {
+        "const": "youtube",
+        "default": "youtube",
+        "title": "Provider",
+        "type": "string"
+      },
+      "canonical_url": {
+        "maxLength": 200,
+        "title": "Canonical Url",
+        "type": "string"
+      },
+      "video_id": {
+        "pattern": "^[A-Za-z0-9_-]{11}$",
+        "title": "Video Id",
+        "type": "string"
+      },
+      "title": {
+        "maxLength": 500,
+        "title": "Title",
+        "type": "string"
+      },
+      "duration_seconds": {
+        "exclusiveMinimum": 0,
+        "maximum": 600,
+        "title": "Duration Seconds",
+        "type": "number"
+      },
+      "subtitle_languages": {
+        "items": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,34}$",
+          "type": "string"
+        },
+        "maxItems": 64,
+        "title": "Subtitle Languages",
+        "type": "array"
+      }
+    },
+    "required": [
+      "canonical_url",
+      "video_id",
+      "title",
+      "duration_seconds"
+    ],
+    "title": "ReferenceSource",
+    "type": "object"
+  },
+  "ReferenceImportRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "maxLength": 2048,
+        "minLength": 1,
+        "title": "Url",
+        "type": "string"
+      },
+      "kind": {
+        "const": "url",
+        "default": "url",
+        "title": "Kind",
+        "type": "string"
+      },
+      "title": {
+        "default": "",
+        "maxLength": 500,
+        "title": "Title",
+        "type": "string"
+      },
+      "lyrics_source": {
+        "default": "none",
+        "enum": [
+          "none",
+          "subtitles",
+          "whisper"
+        ],
+        "title": "Lyrics Source",
+        "type": "string"
+      },
+      "subtitle_language": {
+        "anyOf": [
+          {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,34}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Subtitle Language"
+      },
+      "separation": {
+        "default": "none",
+        "enum": [
+          "none",
+          "fast",
+          "high",
+          "roformer"
+        ],
+        "title": "Separation",
+        "type": "string"
+      },
+      "melody": {
+        "default": false,
+        "title": "Melody",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "title": "ReferenceImportRequest",
+    "type": "object"
+  },
+  "ReferenceTrackPreparationRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "kind": {
+        "const": "track",
+        "default": "track",
+        "title": "Kind",
+        "type": "string"
+      },
+      "track_id": {
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "title": "Track Id",
+        "type": "integer"
+      },
+      "source_version_id": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Source Version Id"
+      },
+      "lyrics_source": {
+        "default": "none",
+        "enum": [
+          "none",
+          "whisper"
+        ],
+        "title": "Lyrics Source",
+        "type": "string"
+      },
+      "subtitle_language": {
+        "anyOf": [
+          {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,34}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Subtitle Language"
+      },
+      "separation": {
+        "default": "none",
+        "enum": [
+          "none",
+          "fast",
+          "high",
+          "roformer"
+        ],
+        "title": "Separation",
+        "type": "string"
+      },
+      "melody": {
+        "default": true,
+        "title": "Melody",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "track_id"
+    ],
+    "title": "ReferenceTrackPreparationRequest",
+    "type": "object"
+  },
+  "ReferenceLyricLine": {
+    "additionalProperties": false,
+    "properties": {
+      "text": {
+        "maxLength": 2000,
+        "minLength": 1,
+        "title": "Text",
+        "type": "string"
+      },
+      "start_seconds": {
+        "anyOf": [
+          {
+            "maximum": 600,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Start Seconds"
+      },
+      "end_seconds": {
+        "anyOf": [
+          {
+            "maximum": 600,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "End Seconds"
+      },
+      "language": {
+        "anyOf": [
+          {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,34}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Language"
+      },
+      "provenance": {
+        "default": "user_text",
+        "enum": [
+          "provided_subtitles",
+          "whisper",
+          "user_text"
+        ],
+        "title": "Provenance",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "ReferenceLyricLine",
+    "type": "object"
+  },
+  "ReferenceLyrics": {
+    "additionalProperties": false,
+    "properties": {
+      "lyrics": {
+        "maxLength": 100000,
+        "title": "Lyrics",
+        "type": "string"
+      },
+      "lines": {
+        "items": {
+          "$ref": "#/$defs/ReferenceLyricLine"
+        },
+        "maxItems": 4096,
+        "title": "Lines",
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 16,
+        "title": "Warnings",
+        "type": "array"
+      }
+    },
+    "required": [
+      "lyrics",
+      "lines"
+    ],
+    "title": "ReferenceLyrics",
+    "type": "object"
+  },
+  "ReferenceStage": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "enum": [
+          "download",
+          "lyrics",
+          "separation",
+          "melody"
+        ],
+        "title": "Name",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "skipped",
+          "failed",
+          "missing_tool",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "error_code": {
+        "anyOf": [
+          {
+            "enum": [
+              "invalid_url",
+              "provider_not_allowed",
+              "private_address",
+              "redirect_blocked",
+              "network_failed",
+              "network_limit",
+              "duration_limit",
+              "size_limit",
+              "yt_dlp_missing",
+              "ffmpeg_missing",
+              "subtitle_language_required",
+              "subtitle_language_unavailable",
+              "subtitles_unavailable",
+              "unsupported_subtitles",
+              "whisper_missing",
+              "whisper_model_missing",
+              "separation_unavailable",
+              "melody_unavailable",
+              "tool_failed",
+              "tool_timeout",
+              "invalid_audio",
+              "source_missing",
+              "track_missing",
+              "import_interrupted",
+              "import_failed",
+              "invalid_abc",
+              "unsupported_abc",
+              "range_unavailable",
+              "lyrics_empty",
+              "busy"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Error Code"
+      }
+    },
+    "required": [
+      "name",
+      "status"
+    ],
+    "title": "ReferenceStage",
+    "type": "object"
+  },
+  "ReferenceImport": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Id",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "partial",
+          "failed",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "request": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReferenceImportRequest"
+          },
+          {
+            "$ref": "#/$defs/ReferenceTrackPreparationRequest"
+          }
+        ],
+        "title": "Request"
+      },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReferenceSource"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "track_id": {
+        "anyOf": [
+          {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Track Id"
+      },
+      "audio_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Audio Url"
+      },
+      "vocal_audio_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Vocal Audio Url"
+      },
+      "stages": {
+        "items": {
+          "$ref": "#/$defs/ReferenceStage"
+        },
+        "maxItems": 4,
+        "minItems": 4,
+        "title": "Stages",
+        "type": "array"
+      },
+      "lyrics": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReferenceLyrics"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "abc": {
+        "anyOf": [
+          {
+            "maxLength": 100000,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Abc"
+      },
+      "created_at": {
+        "maxLength": 64,
+        "title": "Created At",
+        "type": "string"
+      },
+      "updated_at": {
+        "maxLength": 64,
+        "title": "Updated At",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "status",
+      "request",
+      "stages",
+      "created_at",
+      "updated_at"
+    ],
+    "title": "ReferenceImport",
+    "type": "object"
+  },
+  "ReferenceImportsResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "imports": {
+        "items": {
+          "$ref": "#/$defs/ReferenceImport"
+        },
+        "title": "Imports",
+        "type": "array"
+      }
+    },
+    "required": [
+      "imports"
+    ],
+    "title": "ReferenceImportsResponse",
+    "type": "object"
+  },
+  "ReferenceDeleteResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "deleted": {
+        "title": "Deleted",
+        "type": "boolean"
+      },
+      "track_retained": {
+        "title": "Track Retained",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted",
+      "track_retained"
+    ],
+    "title": "ReferenceDeleteResponse",
+    "type": "object"
+  },
+  "ReferenceAbcRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "abc": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "title": "Abc",
+        "type": "string"
+      },
+      "transpose_semitones": {
+        "default": 0,
+        "maximum": 24,
+        "minimum": -24,
+        "title": "Transpose Semitones",
+        "type": "integer"
+      },
+      "tempo_bpm": {
+        "anyOf": [
+          {
+            "maximum": 300,
+            "minimum": 20,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Tempo Bpm"
+      },
+      "target_min_midi": {
+        "anyOf": [
+          {
+            "maximum": 96,
+            "minimum": 24,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Target Min Midi"
+      },
+      "target_max_midi": {
+        "anyOf": [
+          {
+            "maximum": 96,
+            "minimum": 24,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Target Max Midi"
+      }
+    },
+    "required": [
+      "abc"
+    ],
+    "title": "ReferenceAbcRequest",
+    "type": "object"
+  },
+  "ReferenceAbcResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "abc": {
+        "maxLength": 100000,
+        "title": "Abc",
+        "type": "string"
+      },
+      "note_count": {
+        "maximum": 20000,
+        "minimum": 1,
+        "title": "Note Count",
+        "type": "integer"
+      },
+      "min_midi": {
+        "maximum": 127,
+        "minimum": 0,
+        "title": "Min Midi",
+        "type": "integer"
+      },
+      "max_midi": {
+        "maximum": 127,
+        "minimum": 0,
+        "title": "Max Midi",
+        "type": "integer"
+      },
+      "applied_transpose_semitones": {
+        "maximum": 48,
+        "minimum": -48,
+        "title": "Applied Transpose Semitones",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "abc",
+      "note_count",
+      "min_midi",
+      "max_midi",
+      "applied_transpose_semitones"
+    ],
+    "title": "ReferenceAbcResponse",
+    "type": "object"
+  },
+  "ReferenceLyricsRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "text": {
+        "maxLength": 100000,
+        "minLength": 1,
+        "title": "Text",
+        "type": "string"
+      },
+      "format": {
+        "default": "plain",
+        "enum": [
+          "plain",
+          "srt",
+          "vtt"
+        ],
+        "title": "Format",
+        "type": "string"
+      },
+      "language": {
+        "anyOf": [
+          {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,34}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Language"
+      },
+      "section_size": {
+        "default": 8,
+        "maximum": 32,
+        "minimum": 1,
+        "title": "Section Size",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "ReferenceLyricsRequest",
+    "type": "object"
   }
 } as const
 
@@ -6262,6 +9474,30 @@ function isAudioExportsResponse(value: unknown): value is AudioExportsResponse {
 }
 export function parseAudioExportsResponse(value: unknown): AudioExportsResponse {
   if (!isAudioExportsResponse(value)) throw new TypeError("Invalid AudioExportsResponse response")
+  return value
+}
+
+function isStemAudioExportResponse(value: unknown): value is StemAudioExportResponse {
+  return decodeSchema(schemas.StemAudioExportResponse, value, schemas)
+}
+export function parseStemAudioExportResponse(value: unknown): StemAudioExportResponse {
+  if (!isStemAudioExportResponse(value)) throw new TypeError("Invalid StemAudioExportResponse response")
+  return value
+}
+
+function isStemAudioExportsResponse(value: unknown): value is StemAudioExportsResponse {
+  return decodeSchema(schemas.StemAudioExportsResponse, value, schemas)
+}
+export function parseStemAudioExportsResponse(value: unknown): StemAudioExportsResponse {
+  if (!isStemAudioExportsResponse(value)) throw new TypeError("Invalid StemAudioExportsResponse response")
+  return value
+}
+
+function isCreateStemExportRequest(value: unknown): value is CreateStemExportRequest {
+  return decodeSchema(schemas.CreateStemExportRequest, value, schemas)
+}
+export function parseCreateStemExportRequest(value: unknown): CreateStemExportRequest {
+  if (!isCreateStemExportRequest(value)) throw new TypeError("Invalid CreateStemExportRequest response")
   return value
 }
 
@@ -6742,5 +9978,309 @@ function isTrackActivityResponse(value: unknown): value is TrackActivityResponse
 }
 export function parseTrackActivityResponse(value: unknown): TrackActivityResponse {
   if (!isTrackActivityResponse(value)) throw new TypeError("Invalid TrackActivityResponse response")
+  return value
+}
+
+function isGenerationSamplingSettings(value: unknown): value is GenerationSamplingSettings {
+  return decodeSchema(schemas.GenerationSamplingSettings, value, schemas)
+}
+export function parseGenerationSamplingSettings(value: unknown): GenerationSamplingSettings {
+  if (!isGenerationSamplingSettings(value)) throw new TypeError("Invalid GenerationSamplingSettings response")
+  return value
+}
+
+function isAceGenerationSettings(value: unknown): value is AceGenerationSettings {
+  return decodeSchema(schemas.AceGenerationSettings, value, schemas)
+}
+export function parseAceGenerationSettings(value: unknown): AceGenerationSettings {
+  if (!isAceGenerationSettings(value)) throw new TypeError("Invalid AceGenerationSettings response")
+  return value
+}
+
+function isYueGenerationSettings(value: unknown): value is YueGenerationSettings {
+  return decodeSchema(schemas.YueGenerationSettings, value, schemas)
+}
+export function parseYueGenerationSettings(value: unknown): YueGenerationSettings {
+  if (!isYueGenerationSettings(value)) throw new TypeError("Invalid YueGenerationSettings response")
+  return value
+}
+
+function isGenerationHistoryEntry(value: unknown): value is GenerationHistoryEntry {
+  return decodeSchema(schemas.GenerationHistoryEntry, value, schemas)
+}
+export function parseGenerationHistoryEntry(value: unknown): GenerationHistoryEntry {
+  if (!isGenerationHistoryEntry(value)) throw new TypeError("Invalid GenerationHistoryEntry response")
+  return value
+}
+
+function isGenerationHistoryResponse(value: unknown): value is GenerationHistoryResponse {
+  return decodeSchema(schemas.GenerationHistoryResponse, value, schemas)
+}
+export function parseGenerationHistoryResponse(value: unknown): GenerationHistoryResponse {
+  if (!isGenerationHistoryResponse(value)) throw new TypeError("Invalid GenerationHistoryResponse response")
+  return value
+}
+
+function isGenerationLibrarySettings(value: unknown): value is GenerationLibrarySettings {
+  return decodeSchema(schemas.GenerationLibrarySettings, value, schemas)
+}
+export function parseGenerationLibrarySettings(value: unknown): GenerationLibrarySettings {
+  if (!isGenerationLibrarySettings(value)) throw new TypeError("Invalid GenerationLibrarySettings response")
+  return value
+}
+
+function isUpdateGenerationLibrarySettingsRequest(value: unknown): value is UpdateGenerationLibrarySettingsRequest {
+  return decodeSchema(schemas.UpdateGenerationLibrarySettingsRequest, value, schemas)
+}
+export function parseUpdateGenerationLibrarySettingsRequest(value: unknown): UpdateGenerationLibrarySettingsRequest {
+  if (!isUpdateGenerationLibrarySettingsRequest(value)) throw new TypeError("Invalid UpdateGenerationLibrarySettingsRequest response")
+  return value
+}
+
+function isGenerationPreset(value: unknown): value is GenerationPreset {
+  return decodeSchema(schemas.GenerationPreset, value, schemas)
+}
+export function parseGenerationPreset(value: unknown): GenerationPreset {
+  if (!isGenerationPreset(value)) throw new TypeError("Invalid GenerationPreset response")
+  return value
+}
+
+function isGenerationPresetsResponse(value: unknown): value is GenerationPresetsResponse {
+  return decodeSchema(schemas.GenerationPresetsResponse, value, schemas)
+}
+export function parseGenerationPresetsResponse(value: unknown): GenerationPresetsResponse {
+  if (!isGenerationPresetsResponse(value)) throw new TypeError("Invalid GenerationPresetsResponse response")
+  return value
+}
+
+function isCreateGenerationPresetRequest(value: unknown): value is CreateGenerationPresetRequest {
+  return decodeSchema(schemas.CreateGenerationPresetRequest, value, schemas)
+}
+export function parseCreateGenerationPresetRequest(value: unknown): CreateGenerationPresetRequest {
+  if (!isCreateGenerationPresetRequest(value)) throw new TypeError("Invalid CreateGenerationPresetRequest response")
+  return value
+}
+
+function isUpdateGenerationPresetRequest(value: unknown): value is UpdateGenerationPresetRequest {
+  return decodeSchema(schemas.UpdateGenerationPresetRequest, value, schemas)
+}
+export function parseUpdateGenerationPresetRequest(value: unknown): UpdateGenerationPresetRequest {
+  if (!isUpdateGenerationPresetRequest(value)) throw new TypeError("Invalid UpdateGenerationPresetRequest response")
+  return value
+}
+
+function isDuplicateGenerationPresetRequest(value: unknown): value is DuplicateGenerationPresetRequest {
+  return decodeSchema(schemas.DuplicateGenerationPresetRequest, value, schemas)
+}
+export function parseDuplicateGenerationPresetRequest(value: unknown): DuplicateGenerationPresetRequest {
+  if (!isDuplicateGenerationPresetRequest(value)) throw new TypeError("Invalid DuplicateGenerationPresetRequest response")
+  return value
+}
+
+function isImportGenerationPreset(value: unknown): value is ImportGenerationPreset {
+  return decodeSchema(schemas.ImportGenerationPreset, value, schemas)
+}
+export function parseImportGenerationPreset(value: unknown): ImportGenerationPreset {
+  if (!isImportGenerationPreset(value)) throw new TypeError("Invalid ImportGenerationPreset response")
+  return value
+}
+
+function isImportGenerationPresetsRequest(value: unknown): value is ImportGenerationPresetsRequest {
+  return decodeSchema(schemas.ImportGenerationPresetsRequest, value, schemas)
+}
+export function parseImportGenerationPresetsRequest(value: unknown): ImportGenerationPresetsRequest {
+  if (!isImportGenerationPresetsRequest(value)) throw new TypeError("Invalid ImportGenerationPresetsRequest response")
+  return value
+}
+
+function isGenerationPresetImportResponse(value: unknown): value is GenerationPresetImportResponse {
+  return decodeSchema(schemas.GenerationPresetImportResponse, value, schemas)
+}
+export function parseGenerationPresetImportResponse(value: unknown): GenerationPresetImportResponse {
+  if (!isGenerationPresetImportResponse(value)) throw new TypeError("Invalid GenerationPresetImportResponse response")
+  return value
+}
+
+function isGenerationDeleteResponse(value: unknown): value is GenerationDeleteResponse {
+  return decodeSchema(schemas.GenerationDeleteResponse, value, schemas)
+}
+export function parseGenerationDeleteResponse(value: unknown): GenerationDeleteResponse {
+  if (!isGenerationDeleteResponse(value)) throw new TypeError("Invalid GenerationDeleteResponse response")
+  return value
+}
+
+function isYueOptions(value: unknown): value is YueOptions {
+  return decodeSchema(schemas.YueOptions, value, schemas)
+}
+export function parseYueOptions(value: unknown): YueOptions {
+  if (!isYueOptions(value)) throw new TypeError("Invalid YueOptions response")
+  return value
+}
+
+function isYueSubmitRequest(value: unknown): value is YueSubmitRequest {
+  return decodeSchema(schemas.YueSubmitRequest, value, schemas)
+}
+export function parseYueSubmitRequest(value: unknown): YueSubmitRequest {
+  if (!isYueSubmitRequest(value)) throw new TypeError("Invalid YueSubmitRequest response")
+  return value
+}
+
+function isYueNativeProgress(value: unknown): value is YueNativeProgress {
+  return decodeSchema(schemas.YueNativeProgress, value, schemas)
+}
+export function parseYueNativeProgress(value: unknown): YueNativeProgress {
+  if (!isYueNativeProgress(value)) throw new TypeError("Invalid YueNativeProgress response")
+  return value
+}
+
+function isYueJobResponse(value: unknown): value is YueJobResponse {
+  return decodeSchema(schemas.YueJobResponse, value, schemas)
+}
+export function parseYueJobResponse(value: unknown): YueJobResponse {
+  if (!isYueJobResponse(value)) throw new TypeError("Invalid YueJobResponse response")
+  return value
+}
+
+function isYueJobsResponse(value: unknown): value is YueJobsResponse {
+  return decodeSchema(schemas.YueJobsResponse, value, schemas)
+}
+export function parseYueJobsResponse(value: unknown): YueJobsResponse {
+  if (!isYueJobsResponse(value)) throw new TypeError("Invalid YueJobsResponse response")
+  return value
+}
+
+function isDeleteYueJobResponse(value: unknown): value is DeleteYueJobResponse {
+  return decodeSchema(schemas.DeleteYueJobResponse, value, schemas)
+}
+export function parseDeleteYueJobResponse(value: unknown): DeleteYueJobResponse {
+  if (!isDeleteYueJobResponse(value)) throw new TypeError("Invalid DeleteYueJobResponse response")
+  return value
+}
+
+function isReferenceToolCapability(value: unknown): value is ReferenceToolCapability {
+  return decodeSchema(schemas.ReferenceToolCapability, value, schemas)
+}
+export function parseReferenceToolCapability(value: unknown): ReferenceToolCapability {
+  if (!isReferenceToolCapability(value)) throw new TypeError("Invalid ReferenceToolCapability response")
+  return value
+}
+
+function isReferenceSeparationCapability(value: unknown): value is ReferenceSeparationCapability {
+  return decodeSchema(schemas.ReferenceSeparationCapability, value, schemas)
+}
+export function parseReferenceSeparationCapability(value: unknown): ReferenceSeparationCapability {
+  if (!isReferenceSeparationCapability(value)) throw new TypeError("Invalid ReferenceSeparationCapability response")
+  return value
+}
+
+function isReferenceCapabilities(value: unknown): value is ReferenceCapabilities {
+  return decodeSchema(schemas.ReferenceCapabilities, value, schemas)
+}
+export function parseReferenceCapabilities(value: unknown): ReferenceCapabilities {
+  if (!isReferenceCapabilities(value)) throw new TypeError("Invalid ReferenceCapabilities response")
+  return value
+}
+
+function isReferenceProbeRequest(value: unknown): value is ReferenceProbeRequest {
+  return decodeSchema(schemas.ReferenceProbeRequest, value, schemas)
+}
+export function parseReferenceProbeRequest(value: unknown): ReferenceProbeRequest {
+  if (!isReferenceProbeRequest(value)) throw new TypeError("Invalid ReferenceProbeRequest response")
+  return value
+}
+
+function isReferenceSource(value: unknown): value is ReferenceSource {
+  return decodeSchema(schemas.ReferenceSource, value, schemas)
+}
+export function parseReferenceSource(value: unknown): ReferenceSource {
+  if (!isReferenceSource(value)) throw new TypeError("Invalid ReferenceSource response")
+  return value
+}
+
+function isReferenceImportRequest(value: unknown): value is ReferenceImportRequest {
+  return decodeSchema(schemas.ReferenceImportRequest, value, schemas)
+}
+export function parseReferenceImportRequest(value: unknown): ReferenceImportRequest {
+  if (!isReferenceImportRequest(value)) throw new TypeError("Invalid ReferenceImportRequest response")
+  return value
+}
+
+function isReferenceTrackPreparationRequest(value: unknown): value is ReferenceTrackPreparationRequest {
+  return decodeSchema(schemas.ReferenceTrackPreparationRequest, value, schemas)
+}
+export function parseReferenceTrackPreparationRequest(value: unknown): ReferenceTrackPreparationRequest {
+  if (!isReferenceTrackPreparationRequest(value)) throw new TypeError("Invalid ReferenceTrackPreparationRequest response")
+  return value
+}
+
+function isReferenceLyricLine(value: unknown): value is ReferenceLyricLine {
+  return decodeSchema(schemas.ReferenceLyricLine, value, schemas)
+}
+export function parseReferenceLyricLine(value: unknown): ReferenceLyricLine {
+  if (!isReferenceLyricLine(value)) throw new TypeError("Invalid ReferenceLyricLine response")
+  return value
+}
+
+function isReferenceLyrics(value: unknown): value is ReferenceLyrics {
+  return decodeSchema(schemas.ReferenceLyrics, value, schemas)
+}
+export function parseReferenceLyrics(value: unknown): ReferenceLyrics {
+  if (!isReferenceLyrics(value)) throw new TypeError("Invalid ReferenceLyrics response")
+  return value
+}
+
+function isReferenceStage(value: unknown): value is ReferenceStage {
+  return decodeSchema(schemas.ReferenceStage, value, schemas)
+}
+export function parseReferenceStage(value: unknown): ReferenceStage {
+  if (!isReferenceStage(value)) throw new TypeError("Invalid ReferenceStage response")
+  return value
+}
+
+function isReferenceImport(value: unknown): value is ReferenceImport {
+  return decodeSchema(schemas.ReferenceImport, value, schemas)
+}
+export function parseReferenceImport(value: unknown): ReferenceImport {
+  if (!isReferenceImport(value)) throw new TypeError("Invalid ReferenceImport response")
+  return value
+}
+
+function isReferenceImportsResponse(value: unknown): value is ReferenceImportsResponse {
+  return decodeSchema(schemas.ReferenceImportsResponse, value, schemas)
+}
+export function parseReferenceImportsResponse(value: unknown): ReferenceImportsResponse {
+  if (!isReferenceImportsResponse(value)) throw new TypeError("Invalid ReferenceImportsResponse response")
+  return value
+}
+
+function isReferenceDeleteResponse(value: unknown): value is ReferenceDeleteResponse {
+  return decodeSchema(schemas.ReferenceDeleteResponse, value, schemas)
+}
+export function parseReferenceDeleteResponse(value: unknown): ReferenceDeleteResponse {
+  if (!isReferenceDeleteResponse(value)) throw new TypeError("Invalid ReferenceDeleteResponse response")
+  return value
+}
+
+function isReferenceAbcRequest(value: unknown): value is ReferenceAbcRequest {
+  return decodeSchema(schemas.ReferenceAbcRequest, value, schemas)
+}
+export function parseReferenceAbcRequest(value: unknown): ReferenceAbcRequest {
+  if (!isReferenceAbcRequest(value)) throw new TypeError("Invalid ReferenceAbcRequest response")
+  return value
+}
+
+function isReferenceAbcResponse(value: unknown): value is ReferenceAbcResponse {
+  return decodeSchema(schemas.ReferenceAbcResponse, value, schemas)
+}
+export function parseReferenceAbcResponse(value: unknown): ReferenceAbcResponse {
+  if (!isReferenceAbcResponse(value)) throw new TypeError("Invalid ReferenceAbcResponse response")
+  return value
+}
+
+function isReferenceLyricsRequest(value: unknown): value is ReferenceLyricsRequest {
+  return decodeSchema(schemas.ReferenceLyricsRequest, value, schemas)
+}
+export function parseReferenceLyricsRequest(value: unknown): ReferenceLyricsRequest {
+  if (!isReferenceLyricsRequest(value)) throw new TypeError("Invalid ReferenceLyricsRequest response")
   return value
 }

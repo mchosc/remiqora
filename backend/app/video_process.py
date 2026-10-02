@@ -8,7 +8,18 @@ from __future__ import annotations
 import argparse, asyncio, json, os, signal, subprocess, sys, tempfile, threading, time, uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import IO
 from pydantic import BaseModel, Field, ValidationError
+
+if not __package__:
+    # The wrapper may run from a model/tool directory outside the backend.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.orchestrator.windows_job import NAME_PATTERN, WindowsJob
+
+
+# Recovery keeps the same handle when accounting fails, rather than silently
+# releasing ownership or leaking a fresh handle on every retry.
+_recovering_windows_jobs: dict[str, WindowsJob] = {}
 
 
 class WorkerIdentity(BaseModel):
@@ -18,9 +29,10 @@ class WorkerIdentity(BaseModel):
 
 
 class WorkerReceipt(BaseModel):
-    pid: int
-    token: str
+    pid: int = Field(ge=1, strict=True)
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
     returncode: int | None = None
+    job_name: str | None = Field(default=None, pattern="^" + NAME_PATTERN + "$", max_length=80)
 
 
 class WorkerOutputError(Exception):
@@ -66,39 +78,64 @@ def _receipt(path: Path, value: WorkerReceipt) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _watch_parent(stream: IO[bytes], job: WindowsJob | None) -> None:
+    try:
+        while stream.read(1):
+            pass
+    finally:
+        if job is not None:
+            job.terminate()
+        elif sys.platform != "win32":
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        else:
+            raise OSError("worker_job_required")
+
+
+def _supervise_worker(command: list[str], receipt: Path, value: WorkerReceipt,
+                      parent: IO[bytes], cwd: str | None, job: WindowsJob | None) -> int:
+    if job is not None:
+        # Assign the wrapper before it can create any descendants.
+        job.assign_current()
+        value.job_name = job.name
+    _receipt(receipt, value)
+    threading.Thread(target=_watch_parent, args=(parent, job), daemon=True,
+                     name="tool-parent-liveness").start()
+    try:
+        proc = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL)
+        value.returncode = proc.wait()
+    except Exception:
+        value.returncode = 1
+    _receipt(receipt, value)
+    if job is not None:
+        # A tool launcher can exit while GPU/download/codec children remain.
+        job.terminate(max(0, value.returncode) & 0xFFFFFFFF)
+    return value.returncode
+
+
 def _supervise() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--token", required=True)
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--cwd")
+    parser.add_argument("--job")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command: list[str] = args.command
     if command and command[0] == "--":
         command = command[1:]
     value = WorkerReceipt(pid=os.getpid(), token=args.token)
-    receipt = Path(args.receipt)
-    _receipt(receipt, value)
-
-    def watch_parent() -> None:
-        os.read(sys.stdin.fileno(), 1)
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/PID", str(os.getpid()), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            os._exit(99)
-        os.killpg(os.getpgrp(), signal.SIGKILL)
-
-    threading.Thread(target=watch_parent, daemon=True).start()
+    if sys.platform == "win32" and args.job is None:
+        parser.error("Windows tool workers require an owned job")
+    job = WindowsJob.open(args.job) if args.job is not None else None
     try:
-        proc = subprocess.Popen(command, cwd=args.cwd)
-        value.returncode = proc.wait()
-    except Exception:
-        value.returncode = 1
-    _receipt(receipt, value)
-    return value.returncode
+        # A daemon blocked in BufferedReader.read can abort Python shutdown.
+        # The raw pipe remains held by the watcher until wrapper process exit;
+        # closing it here could race EOF handling with a successful POSIX exit.
+        parent = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+        return _supervise_worker(command, Path(args.receipt), value, parent, args.cwd, job)
+    finally:
+        if job is not None:
+            job.close()
 
 
 async def spawn_owned(
@@ -110,7 +147,7 @@ async def spawn_owned(
     stdout: int | None = None,
     on_identity: Callable[[WorkerIdentity], None] | None = None,
 ) -> asyncio.subprocess.Process:
-    from .job_lifecycle import await_cleanup, kill_process_tree
+    from .job_lifecycle import await_cleanup, kill_process_tree, register_windows_job
 
     token = uuid.uuid4().hex
     command = [
@@ -121,6 +158,9 @@ async def spawn_owned(
         "--receipt",
         str(receipt_path.resolve()),
     ]
+    job = WindowsJob.create() if sys.platform == "win32" else None
+    if job is not None:
+        command += ["--job", job.name]
     if cwd is not None:
         command += ["--cwd", str(cwd)]
     command += ["--", *argv]
@@ -136,14 +176,26 @@ async def spawn_owned(
     )
     try:
         proc = await asyncio.shield(creation)
+        if job is not None:
+            register_windows_job(proc, job)
         if on_identity is not None:
             on_identity(
                 WorkerIdentity(pid=proc.pid, token=token, receipt=str(receipt_path))
             )
         return proc
     except BaseException:
-        proc = await await_cleanup(creation)
-        await await_cleanup(kill_process_tree(proc))
+        try:
+            await await_cleanup(creation)
+        finally:
+            # await_cleanup can propagate a second cancellation after creation
+            # succeeded. The created wrapper still belongs to us in that case.
+            if creation.done() and not creation.cancelled() and creation.exception() is None:
+                proc = creation.result()
+                if job is not None:
+                    register_windows_job(proc, job)
+                await await_cleanup(kill_process_tree(proc))
+            elif job is not None:
+                job.close()
         raise
 
 
@@ -165,31 +217,45 @@ async def terminate_verified(identity: WorkerIdentity) -> bool:
     )
     out, _ = await communicate_process(proc, 5)
     text = out.decode(errors="replace").strip()
-    if not text:
-        return True
-    if (
+    if text and (
         str(Path(__file__).resolve()) not in text
         or f"--token {identity.token}" not in text
     ):
         return False
     try:
-        receipt = WorkerReceipt.model_validate_json(Path(identity.receipt).read_bytes())
+        path = Path(identity.receipt)
+        if path.stat().st_size > 65536:
+            return False
+        receipt = WorkerReceipt.model_validate_json(path.read_bytes())
     except (OSError, ValidationError):
-        return False
+        return not text and sys.platform != "win32"
     if receipt.pid != identity.pid or receipt.token != identity.token:
         return False
     if sys.platform == "win32":
-        killer = await spawn_process(
-            "taskkill",
-            "/PID",
-            str(identity.pid),
-            "/T",
-            "/F",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await communicate_process(killer, 10)
-        return killer.returncode == 0
+        # Legacy receipts cannot prove descendants were members of a job.
+        if receipt.job_name is None:
+            return False
+        from .job_lifecycle import drain_windows_job
+        job = _recovering_windows_jobs.get(receipt.job_name)
+        if job is None:
+            try:
+                job = WindowsJob.open(receipt.job_name)
+            except OSError as error:
+                code: object = getattr(error, "winerror", None)
+                # ERROR_FILE_NOT_FOUND: the exact named kernel object is gone.
+                return type(code) is int and code == 2
+            _recovering_windows_jobs[receipt.job_name] = job
+        try:
+            job.terminate()
+            async with asyncio.timeout(10):
+                await drain_windows_job(job)
+            job.close()
+            del _recovering_windows_jobs[receipt.job_name]
+            return True
+        except (OSError, TimeoutError):
+            return False
+    if not text:
+        return True
     try:
         if os.getpgid(identity.pid) != identity.pid:
             return False

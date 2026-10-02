@@ -2,6 +2,7 @@ import { apiFetch, apiJson } from './http'
 import { getConfig } from './orchestrator'
 import type { Yue2ModelSpecConfig } from './orchestrator'
 import * as v from './nativeValidation'
+import type { YueOptions } from './contracts'
 
 const BASE = '/api/yue2'
 
@@ -57,27 +58,7 @@ export async function getSheetSageModelSpec(): Promise<Yue2ModelSpec> {
 
 export type CotMode = 'off' | 'melody' | 'full'
 
-export interface GenerateOptions {
-  style: string
-  cot: CotMode
-  cfg_scale?: number
-  num_inference_steps?: number
-  semantic_temperature?: number
-  semantic_top_p?: number
-  semantic_top_k?: number
-  semantic_repetition_penalty?: number
-  semantic_penalty_window?: number
-  semantic_min_tokens?: number
-  semantic_max_tokens?: number
-  abc?: string
-  abc_temperature?: number
-  abc_top_p?: number
-  abc_top_k?: number
-  abc_repetition_penalty?: number
-  abc_penalty_window?: number
-  abc_min_tokens?: number
-  abc_max_tokens?: number
-}
+export type GenerateOptions = Pick<YueOptions, 'style' | 'cot'> & Partial<Omit<YueOptions, 'style' | 'cot'>>
 
 export interface TaskRunResult {
   audio?: string
@@ -257,10 +238,18 @@ export function abcFromResult(result: TaskRunResult): string {
 }
 
 export function base64AudioBlob(data: string): Blob {
-  const binary = atob(data)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return new Blob([bytes], { type: 'audio/wav' })
+  // Slice on quartet boundaries so the temporary decoded binary string is
+  // bounded. The complete encoded input, byte chunks and Blob still exist.
+  const encoded = /[\t\n\f\r ]/.test(data) ? data.replace(/[\t\n\f\r ]/g, '') : data
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new DOMException('Invalid base64 audio', 'InvalidCharacterError')
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  for (let offset = 0; offset < encoded.length; offset += 32768) {
+    const binary = atob(encoded.slice(offset, offset + 32768))
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+    chunks.push(bytes)
+  }
+  return new Blob(chunks, { type: 'audio/wav' })
 }
 
 export async function health(signal?: AbortSignal): Promise<HealthResponse> {

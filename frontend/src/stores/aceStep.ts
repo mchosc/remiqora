@@ -1,11 +1,12 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
+import { rememberGenerationJob, notifyGenerationComplete } from '../composables/completionNotifications'
 import * as api from '../api/aceStep'
 import type { GenerateMusicRequest } from '../api/aceStep'
 import * as tracksApi from '../api/tracks'
 import type { SavedTrack } from '../api/tracks'
 import { applyStatus, applyVoice, cancelVoiceApply, replaceVoice, getActiveVoiceId, VoiceApplyError } from '../api/voices'
 import type { ApplyStatus } from '../api/voices'
-import type { AceJobResponse, JsonObject, VoiceJobProgress } from '../api/contracts'
+import type { AceGenerationSettings, AceJobResponse, JsonObject, VoiceJobProgress } from '../api/contracts'
 import { isJsonValue, parseAceAdoptRequest } from '../api/contracts'
 import { isObject } from '../api/schemaValidation'
 import { i18n } from '../i18n'
@@ -221,6 +222,7 @@ export const useAceStepStore = defineStore('aceStep', {
         const context: PollContext = { signal: new AbortController().signal, isCurrent: () => generation === this._historyGeneration }
         await Promise.all(this.jobs.map((job) => this._refreshVoices(job, context)))
         if (!context.isCurrent()) return
+        for (const job of this.jobs) this._noteCompletion(job)
         this._ensurePolling()
       } catch (error) {
         if (generation === this._historyGeneration) this.historyError = error instanceof Error ? error.message : 'Unable to load generation history'
@@ -308,9 +310,15 @@ export const useAceStepStore = defineStore('aceStep', {
       if (!context.isCurrent()) return
       await Promise.all(this.jobs.filter((job) => job.dbIds.length && (job.voiceApply === 'running' || (job.voiceId && !job.voiceApply))).map((job) => this._refreshVoices(job, context)))
     },
+    _noteCompletion(job: AceJob) {
+      if (!job.backendOwned) return
+      if (!job.finalized) rememberGenerationJob(`ace:${job.id}`)
+      else if (job.status === 'done' && job.dbIds.length && (!job.voiceId || job.voiceApply === 'done')) void notifyGenerationComplete(`ace:${job.id}`, job.title)
+    },
     _applyResult(job: AceJob, row: AceJobResponse) {
       const next = fromBackend(row)
       Object.assign(job, next)
+      this._noteCompletion(job)
     },
     async _refreshVoices(job: AceJob, context?: PollContext) {
       if (voiceActions(this).has(job.id)) { job.voiceActionPending = true; return }
@@ -322,10 +330,11 @@ export const useAceStepStore = defineStore('aceStep', {
       const live = this.jobs.find((entry) => entry.id === job.id)
       if (!live) return
       applyVoiceStates(live, rows.filter((row) => row !== null))
+      this._noteCompletion(live)
     },
-    async submit(req: GenerateMusicRequest, refAudioFile: File | null, title: string): Promise<AceJob> {
+    async submit(req: GenerateMusicRequest, refAudioFile: File | null, title: string, styleAudioFile?: File | null, settings?: AceGenerationSettings): Promise<AceJob> {
       const voiceId = getActiveVoiceId()
-      const result = await api.releaseTask(req, refAudioFile, title, voiceId)
+      const result = await api.releaseTask(req, refAudioFile, title, voiceId, styleAudioFile, settings)
       const job: AceJob = {
         id: result.task_id, status: result.status, createdAt: Date.now(), title,
         origin: 'ace_step',
@@ -334,6 +343,8 @@ export const useAceStepStore = defineStore('aceStep', {
         finalized: false, backendOwned: true, voiceId: voiceId || undefined, params: { ...req },
       }
       this.jobs.unshift(job)
+      rememberGenerationJob(`ace:${job.id}`)
+      this._noteCompletion(job)
       this._ensurePolling()
       return job
     },
