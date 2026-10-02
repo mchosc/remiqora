@@ -4,6 +4,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useYue2Store } from './yue2'
 import { useAceStepStore } from './aceStep'
 import { useOrchestratorStore } from './orchestrator'
+import * as yueOwned from '../api/yueJobs'
+import { yueJobResponse } from './yueJobFixtures'
 import * as yueApi from '../api/yue2'
 import * as aceApi from '../api/aceStep'
 import * as orchestratorApi from '../api/orchestrator'
@@ -15,6 +17,7 @@ import { useLoraTrainingStore } from './loraTraining'
 import * as trainingApi from '../api/aceStepTraining'
 import { clearVoiceWatch } from './voiceWatch'
 
+vi.mock('../api/yueJobs', async original => ({ ...await original<typeof import('../api/yueJobs')>(), list: vi.fn().mockResolvedValue([]), submit: vi.fn(), cancel: vi.fn() }))
 vi.mock('../api/yue2', () => ({ health: vi.fn(), generateTrack: vi.fn() }))
 vi.mock('../api/aceStep', () => ({ health: vi.fn(), queryResult: vi.fn(), listJobs: vi.fn(), retrySave: vi.fn(), releaseTask: vi.fn(), adoptLegacyJob: vi.fn() }))
 vi.mock('../api/orchestrator', () => ({ getStatus: vi.fn() }))
@@ -35,26 +38,24 @@ beforeEach(() => {
   localStorage.clear()
   clearVoiceWatch(17)
   clearVoiceWatch(18)
+  vi.mocked(yueOwned.list).mockResolvedValue([])
   vi.mocked(getActiveVoiceId).mockReturnValue('captured-voice')
   vi.mocked(applyStatus).mockResolvedValue({ status: 'idle', error: '', error_code: '', audio_url: '' })
 })
 afterEach(() => { vi.useRealTimers() })
 
 describe('job cancellation', () => {
-  it('cancels queued YuE2 jobs before they reach generation', async () => {
-    const first = deferred<yueApi.TaskRunResult>()
-    vi.mocked(yueApi.generateTrack).mockReturnValue(first.promise)
+  it('cancels queued YuE2 jobs through the owned backend without starting browser inference', async () => {
+    vi.mocked(yueOwned.submit).mockResolvedValue(yueJobResponse())
+    vi.mocked(yueOwned.cancel).mockResolvedValue(yueJobResponse({ status: 'cancelled', stage: 'cancelled' }))
     const store = useYue2Store()
-    const batch = store.generateBatch({ lyrics: 'text', style: 'folk', cot: 'off', precision: 'q8_0', baseSeed: 1, randomSeed: false, batchSize: 2, options: { style: 'folk', cot: 'off' } })
-    const queued = store.jobs.find((job) => job.status === 'queued')
-    expect(queued).toBeDefined()
+    await store.generateBatch({ lyrics: 'text', style: 'folk', cot: 'off', precision: 'q8_0', baseSeed: 1, randomSeed: false, batchSize: 1, options: { style: 'folk', cot: 'off' } })
+    const queued = store.jobs.find(job => job.status === 'queued')
     if (!queued) throw new Error('Missing queued job')
-    store.cancel(queued.id)
-    first.resolve({}) // The first request fails without audio; the queue must still skip the cancelled row.
-    await batch
-    expect(queued.status).toBe('cancelled')
-    expect(queued.finalized).toBe(true)
-    expect(yueApi.generateTrack).toHaveBeenCalledTimes(1)
+    await store.cancel(queued.id)
+    expect(queued.status).toBe('cancelled'); expect(queued.finalized).toBe(true)
+    expect(yueOwned.cancel).toHaveBeenCalledWith(queued.id)
+    expect(yueApi.generateTrack).not.toHaveBeenCalled()
   })
 })
 
@@ -140,7 +141,7 @@ describe('backend ACE ownership', () => {
     vi.mocked(aceApi.releaseTask).mockResolvedValue({ task_id: 'task-2', status: 'queued', queue_position: 1 })
     const store = useAceStepStore()
     await store.submit({ batch_size: 2 }, null, 'Title')
-    expect(aceApi.releaseTask).toHaveBeenCalledWith({ batch_size: 2 }, null, 'Title', 'captured-voice')
+    expect(aceApi.releaseTask).toHaveBeenCalledWith({ batch_size: 2 }, null, 'Title', 'captured-voice', undefined, undefined)
     store.stopBackgroundTasks()
   })
 

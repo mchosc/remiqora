@@ -64,3 +64,27 @@ test('reports a missing target file', async () => {
   const dir = tree({});
   await assert.rejects(applyGitPatch(PATCH, dir), /patch target is missing: pkg\/mod\.py/);
 });
+
+test('failed atomic patch promotion retains the original and removes temporary files', async () => {
+  const fsp = require('node:fs/promises');
+  const dir = tree({ 'pkg/mod.py': 'line one\nline two\nline three\n' });
+  const rename = fsp.rename;
+  fsp.rename = async () => { throw new Error('simulated interrupted promotion'); };
+  try {
+    await assert.rejects(applyGitPatch(PATCH, dir), /simulated interrupted promotion/);
+    assert.equal(read(dir, 'pkg/mod.py'), 'line one\nline two\nline three\n');
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'pkg')), ['mod.py']);
+  } finally { fsp.rename = rename; }
+});
+
+test('patch paths cannot escape the root through traversal or symlinks', async () => {
+  const dir = tree({ 'pkg/mod.py': 'line one\nline two\nline three\n' });
+  const outside = tree({ 'mod.py': 'line one\nline two\nline three\n' });
+  for (const name of ['../escape.py', '/absolute.py']) {
+    const unsafe = PATCH.replaceAll('pkg/mod.py', name);
+    await assert.rejects(applyGitPatch(unsafe, dir), /outside|unsafe/);
+  }
+  fs.symlinkSync(outside, path.join(dir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(applyGitPatch(PATCH.replaceAll('pkg/mod.py', 'linked/mod.py'), dir), /outside|unsafe/);
+  assert.equal(read(outside, 'mod.py'), 'line one\nline two\nline three\n');
+});

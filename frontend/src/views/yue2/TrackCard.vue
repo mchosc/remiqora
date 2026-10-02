@@ -14,6 +14,7 @@ import MidiPanel from '../../components/shared/MidiPanel.vue'
 import EditableTitle from '../../components/shared/EditableTitle.vue'
 import { voiceErrorText } from '../../api/voices'
 import VoiceApplyStatus from '../../components/shared/VoiceApplyStatus.vue'
+import YueGenerationStatus from '../../components/shared/YueGenerationStatus.vue'
 import TrackDetails from '../../components/shared/TrackDetails.vue'
 import StyleChips from '../../components/shared/StyleChips.vue'
 import { formatCreated } from '../../composables/formatCreated'
@@ -186,7 +187,7 @@ function copyParamsToForm() {
       <div class="flex shrink-0 items-center gap-2">
         <FavoriteTrackButton v-if="job.dbId != null" :track-id="job.dbId" :label="job.title || t('yueTrack.noStyle')" />
         <StatusBadge :status="shownStatus" :label="voiceRunning && shownStatus !== 'queued' ? t('voiceClone.applyingBadge') : undefined" />
-        <button v-if="!voiceRunning && (job.status === 'queued' || job.status === 'running')" type="button" class="min-h-9 min-w-9 rounded-lg px-2 text-text-dim hover:bg-panel-2 hover:text-status-failed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent1" :disabled="actionPending" :aria-label="t('aceJob.cancel')" :title="t('aceJob.cancel')" @click="cancel">⏹</button>
+        <button v-if="!voiceRunning && (job.status === 'queued' || job.status === 'running' || job.status === 'stopping' || job.errorCode === 'engine_recovery_required')" type="button" class="min-h-9 min-w-9 rounded-lg px-2 text-text-dim hover:bg-panel-2 hover:text-status-failed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent1" :disabled="actionPending" :aria-label="t('aceJob.cancel')" :title="t('aceJob.cancel')" @click="cancel">⏹</button>
         <button v-else type="button" class="min-h-9 min-w-9 rounded-lg px-2 text-text-dim hover:bg-panel-2 hover:text-status-failed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent1" :disabled="actionPending" :aria-label="deleteArmed ? t('upstreamLibrary.confirmDelete') : t('aceJob.delete')" :title="deleteArmed ? t('upstreamLibrary.confirmDelete') : t('aceJob.delete')" @blur="disarmDelete" @click="remove"><span v-if="deleteArmed">{{ t('upstreamLibrary.confirmDelete') }}</span><span v-else aria-hidden="true">✕</span></button>
       </div>
     </div>
@@ -198,10 +199,8 @@ function copyParamsToForm() {
       :job-progress="job.voiceProgress"
     />
 
-    <div v-else-if="!voiceRunning && (job.status === 'queued' || job.status === 'running')" class="space-y-1">
-      <div class="h-2 w-full overflow-hidden rounded-full bg-panel-2">
-        <div class="h-full w-3/5 accent-gradient animate-pulse"></div>
-      </div>
+    <div v-else-if="!voiceRunning && (job.status === 'queued' || job.status === 'running' || job.status === 'stopping' || job.errorCode === 'engine_recovery_required')" class="space-y-1">
+      <YueGenerationStatus :stage="job.stage" :elapsed-seconds="job.elapsedSeconds" :phase-eta-seconds="job.phaseEtaSeconds" :progress="job.nativeProgress" :native-progress-available="job.nativeProgressAvailable" :stopping="job.status === 'stopping'" />
       <p class="text-xs text-text-dim">seed: {{ job.seed }}</p>
     </div>
 
@@ -245,7 +244,7 @@ function copyParamsToForm() {
       <button type="button" class="text-xs text-accent hover:underline" @click="copyParamsToForm">
         {{ copied ? t('aceJob.copied') : t('aceJob.copyParams') }}
       </button>
-      <button v-if="view === 'list' && !voiceRunning && (job.status === 'queued' || job.status === 'running')" type="button" class="text-xs text-text-dim hover:text-status-failed" @click="cancel">{{ t('aceJob.cancel') }}</button>
+      <button v-if="view === 'list' && !voiceRunning && (job.status === 'queued' || job.status === 'running' || job.status === 'stopping' || job.errorCode === 'engine_recovery_required')" type="button" class="text-xs text-text-dim hover:text-status-failed" @click="cancel">{{ t('aceJob.cancel') }}</button>
       <button v-else-if="view === 'list'" type="button" class="text-xs text-text-dim hover:text-status-failed" @blur="disarmDelete" @click="remove">{{ t(deleteArmed ? 'upstreamLibrary.confirmDelete' : 'aceJob.delete') }}</button>
       <button v-if="view === 'cards' && (job.lyrics || detailRows.length)" type="button" class="text-xs text-text-dim hover:underline" @click="showDetails = !showDetails">
         {{ showDetails ? t('aceJob.hideDetails') : t('aceJob.showDetails') }}

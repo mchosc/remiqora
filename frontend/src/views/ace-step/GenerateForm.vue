@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAceStepStore } from '../../stores/aceStep'
 import * as api from '../../api/aceStep'
@@ -10,128 +10,59 @@ import CollapsibleDetails from '../../components/shared/CollapsibleDetails.vue'
 import HelpModal from '../../components/shared/HelpModal.vue'
 import TagInput from '../../components/shared/TagInput.vue'
 import VoiceSelect from '../../components/shared/VoiceSelect.vue'
+import GenerationLibraryButton from '../../components/shared/GenerationLibraryButton.vue'
+import ReferencePreparationButton from '../../components/shared/ReferencePreparationButton.vue'
+import { setActiveVoiceId } from '../../api/voices'
 import { ApiError } from '../../api/http'
 import { voiceErrorText, VoiceApplyError } from '../../api/voices'
 import { estimateTrackDuration } from '../../composables/estimateDuration'
-import { parseAcePresets, finiteNumber, type AcePreset } from '../../composables/generationPresets'
+import { languageLabel } from '../../utils/languageLabel'
+import { finiteNumber } from '../../composables/generationPresets'
+import type { AceGenerationSettings } from '../../api/contracts'
+import { pendingAceDraft, pendingAceReference } from '../../composables/generationDrafts'
 
 const store = useAceStepStore()
 const props = withDefaults(defineProps<{ generationAvailable?: boolean | null }>(), { generationAvailable: true })
-const { t, tm } = useI18n()
+const { t, tm, locale } = useI18n()
 const { loras, add: addLora, remove: removeLora } = useLoraRegistry()
 
 type Mode = 'simple' | 'custom'
 type TaskType = 'cover' | 'repaint' | 'extract' | 'lego' | 'complete' | 'voice_replacement'
 
-const presets = ref<AcePreset[]>([])
-const selectedPresetName = ref('')
-const newPresetName = ref('')
-const showPresetInput = ref(false)
-
-function loadPresets() {
-  try {
-    const raw = localStorage.getItem('acestep_presets')
-    if (raw) {
-      const value: unknown = JSON.parse(raw)
-      presets.value = parseAcePresets(value)
-    }
-  } catch {}
-}
-
-function saveCurrentPreset() {
-  const name = newPresetName.value.trim()
-  if (!name) return
-  const preset: AcePreset = {
-    name,
-    mode: mode.value,
-    simpleQuery: simpleQuery.value,
-    customPrompt: customPrompt.value,
-    instrumental: instrumental.value,
-    customLyrics: customLyrics.value,
-    duration: duration.value,
-    durationAuto: durationAuto.value,
-    audioFormat: audioFormat.value,
-    bpm: bpm.value,
-    keyScale: keyScale.value,
-    timeSignature: timeSignature.value,
-    vocalLanguage: vocalLanguage.value,
-    inferenceSteps: inferenceSteps.value,
-    guidanceScale: guidanceScale.value,
-    selectedModel: selectedModel.value,
-  }
-  const idx = presets.value.findIndex((p) => p.name === preset.name)
-  if (idx !== -1) presets.value[idx] = preset
-  else presets.value.push(preset)
-  localStorage.setItem('acestep_presets', JSON.stringify(presets.value))
-  selectedPresetName.value = name
-  newPresetName.value = ''
-  showPresetInput.value = false
-}
-
-function applyPreset(name: string) {
-  const p = presets.value.find((x) => x.name === name)
-  if (!p) return
-  mode.value = p.mode || 'simple'
-  simpleQuery.value = p.simpleQuery || ''
-  customPrompt.value = p.customPrompt || ''
-  instrumental.value = !!p.instrumental
-  customLyrics.value = p.customLyrics || ''
-  if (p.duration) {
-    duration.value = p.duration
-    durationTouched.value = true
-  }
-  durationAuto.value = p.durationAuto === true
-  if (p.audioFormat) audioFormat.value = p.audioFormat
-  bpm.value = p.bpm ?? null
-  keyScale.value = p.keyScale || ''
-  timeSignature.value = p.timeSignature || ''
-  vocalLanguage.value = p.vocalLanguage || ''
-  inferenceSteps.value = p.inferenceSteps ?? null
-  guidanceScale.value = p.guidanceScale ?? null
-  if (p.selectedModel) selectedModel.value = p.selectedModel
-}
-
-function deletePreset(name: string) {
-  presets.value = presets.value.filter((p) => p.name !== name)
-  localStorage.setItem('acestep_presets', JSON.stringify(presets.value))
-  if (selectedPresetName.value === name) selectedPresetName.value = ''
-}
-
-onMounted(loadPresets)
-
 watch(
   () => store.pendingParamsInsert,
   (params) => {
     if (!params) return
-    if (typeof params.prompt === 'string' && params.prompt) {
-      mode.value = 'custom'
-      customPrompt.value = params.prompt
-    } else if (typeof params.sample_query === 'string' || typeof params.query === 'string') {
-      mode.value = 'simple'
-      simpleQuery.value = typeof params.sample_query === 'string' ? params.sample_query : (typeof params.query === 'string' ? params.query : '')
-    }
-    if (typeof params.lyrics === 'string') customLyrics.value = params.lyrics
-    if (typeof params.instrumental === 'boolean') instrumental.value = params.instrumental
-    if (finiteNumber(params.audio_duration)) {
-      if (params.audio_duration > 0) {
-        durationTouched.value = true
-        duration.value = Math.min(300, Math.max(10, params.audio_duration))
-        durationAuto.value = false
-      } else durationAuto.value = true
-    } else if (finiteNumber(params.duration)) {
+    referenceImportId.value = null; removeStyleReference()
+    referenceNotice.value = useRefAudio.value
+    useCotCaption.value = typeof params.use_cot_caption === 'boolean' ? params.use_cot_caption : true
+    mode.value = typeof params.prompt === 'string' && params.prompt ? 'custom' : 'simple'
+    customPrompt.value = typeof params.prompt === 'string' ? params.prompt : ''
+    simpleQuery.value = typeof params.sample_query === 'string' ? params.sample_query : typeof params.query === 'string' ? params.query : ''
+    customLyrics.value = typeof params.lyrics === 'string' ? params.lyrics : ''
+    instrumental.value = params.instrumental === true
+    durationTouched.value = false
+    duration.value = 120
+    durationAuto.value = true
+    if (finiteNumber(params.audio_duration) && params.audio_duration > 0) {
+      duration.value = Math.min(300, Math.max(10, params.audio_duration))
+      durationAuto.value = false
       durationTouched.value = true
+    } else if (finiteNumber(params.duration) && params.duration > 0) {
       duration.value = Math.min(300, Math.max(10, params.duration))
       durationAuto.value = false
+      durationTouched.value = true
     }
-    if (params.audio_format === 'mp3' || params.audio_format === 'wav' || params.audio_format === 'flac') audioFormat.value = params.audio_format
-    if (finiteNumber(params.bpm)) bpm.value = params.bpm
-    if (typeof params.key_scale === 'string') keyScale.value = params.key_scale
-    if (typeof params.time_signature === 'string') timeSignature.value = params.time_signature
-    if (typeof params.vocal_language === 'string') vocalLanguage.value = params.vocal_language
-    if (finiteNumber(params.inference_steps)) inferenceSteps.value = params.inference_steps
-    if (finiteNumber(params.guidance_scale)) guidanceScale.value = params.guidance_scale
-    if (finiteNumber(params.seed)) seedValue.value = params.seed
-    if (typeof params.model === 'string') selectedModel.value = params.model
+    audioFormat.value = params.audio_format === 'wav' || params.audio_format === 'flac' ? params.audio_format : 'mp3'
+    bpm.value = finiteNumber(params.bpm) ? params.bpm : null
+    keyScale.value = typeof params.key_scale === 'string' ? params.key_scale : ''
+    timeSignature.value = typeof params.time_signature === 'string' ? params.time_signature : ''
+    vocalLanguage.value = typeof params.vocal_language === 'string' ? params.vocal_language : ''
+    inferenceSteps.value = finiteNumber(params.inference_steps) ? params.inference_steps : null
+    inferenceStepsTouched.value = finiteNumber(params.inference_steps)
+    guidanceScale.value = finiteNumber(params.guidance_scale) ? params.guidance_scale : null
+    seedValue.value = finiteNumber(params.seed) ? params.seed : null
+    selectedModel.value = typeof params.model === 'string' ? params.model : store.inventory?.default_model ?? ''
     store.clearPendingParamsInsert()
   },
 )
@@ -144,6 +75,17 @@ const customLyrics = ref('')
 
 const useRefAudio = ref(false)
 const refAudioFile = ref<File | null>(null)
+const styleAudioFile = ref<File | null>(null)
+const sourceFileInput = ref<HTMLInputElement | null>(null)
+const styleFileInput = ref<HTMLInputElement | null>(null)
+const useCotCaption = ref(true)
+const styleReferenceRequired = ref(false)
+const savedSourceName = ref<string | null>(null)
+const savedStyleName = ref<string | null>(null)
+const savedLoraName = ref<string | null>(null)
+const referenceNotice = ref(false)
+const referenceImportId = ref<string | null>(null)
+const loraNotice = ref(false)
 const taskType = ref<TaskType>('cover')
 const selectedVoiceId = ref<string | null>(null)
 const isVoiceReplacement = computed(() => useRefAudio.value && taskType.value === 'voice_replacement')
@@ -159,7 +101,7 @@ const coverStrength = ref(1)
 const duration = ref(120)
 const durationAuto = ref(true)
 const durationTouched = ref(false)
-const batchSize = ref<1 | 2 | 4>(1)
+const batchSize = ref(1)
 
 const audioFormat = ref<'mp3' | 'wav' | 'flac'>('mp3')
 const bpm = ref<number | null>(null)
@@ -178,6 +120,52 @@ const loraStatus = ref('')
 const newLoraName = ref('')
 const newLoraPath = ref('')
 
+const snapshot = computed<AceGenerationSettings>(() => ({
+  engine: 'ace_step', referenceImportId: referenceImportId.value, mode: mode.value, simpleQuery: simpleQuery.value, customPrompt: customPrompt.value,
+  instrumental: instrumental.value, customLyrics: customLyrics.value, duration: duration.value,
+  durationAuto: durationAuto.value, audioFormat: audioFormat.value, bpm: bpm.value, keyScale: keyScale.value,
+  timeSignature: timeSignature.value, vocalLanguage: vocalLanguage.value, inferenceSteps: inferenceSteps.value,
+  guidanceScale: guidanceScale.value, selectedModel: selectedModel.value, seed: seedValue.value,
+  randomSeed: seedValue.value === null, batchSize: batchSize.value, useRefAudio: useRefAudio.value,
+  taskType: taskType.value === 'voice_replacement' ? 'text2music' : taskType.value,
+  repaintStart: repaintStart.value, repaintEnd: repaintEnd.value, trackName: trackName.value,
+  trackClasses: [...trackClasses.value], coverStrength: coverStrength.value, voiceId: selectedVoiceId.value,
+  useCotCaption: useCotCaption.value, styleReferenceRequiresReupload: styleAudioFile.value !== null || styleReferenceRequired.value,
+  sourceReferenceName: refAudioFile.value?.name ?? (useRefAudio.value ? savedSourceName.value : null), styleReferenceName: styleAudioFile.value?.name ?? savedStyleName.value,
+  loraRequiresReselection: selectedLoraPath.value !== '' || loraNotice.value,
+  loraName: loras.value.find(entry => entry.path === selectedLoraPath.value)?.name ?? savedLoraName.value, loraScale: loraScaleVal.value,
+}))
+watch(pendingAceDraft, (saved) => {
+  if (!saved) return
+  mode.value = saved.mode; simpleQuery.value = saved.simpleQuery; customPrompt.value = saved.customPrompt
+  instrumental.value = saved.instrumental; customLyrics.value = saved.customLyrics
+  duration.value = saved.duration; durationAuto.value = saved.durationAuto; durationTouched.value = true
+  audioFormat.value = saved.audioFormat; bpm.value = saved.bpm; keyScale.value = saved.keyScale
+  timeSignature.value = saved.timeSignature; vocalLanguage.value = saved.vocalLanguage
+  inferenceSteps.value = saved.inferenceSteps; inferenceStepsTouched.value = true; guidanceScale.value = saved.guidanceScale
+  selectedModel.value = saved.selectedModel; seedValue.value = saved.randomSeed ? null : saved.seed; batchSize.value = saved.batchSize
+  useRefAudio.value = saved.useRefAudio; taskType.value = saved.taskType === 'text2music' ? 'cover' : saved.taskType
+  repaintStart.value = saved.repaintStart; repaintEnd.value = saved.repaintEnd; trackName.value = saved.trackName
+  trackClasses.value = [...saved.trackClasses]; coverStrength.value = saved.coverStrength
+  useCotCaption.value = saved.useCotCaption; refAudioFile.value = null; styleAudioFile.value = null
+  if (sourceFileInput.value) sourceFileInput.value.value = ''
+  if (styleFileInput.value) styleFileInput.value.value = ''
+  styleReferenceRequired.value = saved.styleReferenceRequiresReupload
+  savedSourceName.value = saved.sourceReferenceName; savedStyleName.value = saved.styleReferenceName
+  savedLoraName.value = saved.loraName
+  referenceImportId.value = saved.referenceImportId ?? null
+  referenceNotice.value = saved.useRefAudio || saved.styleReferenceRequiresReupload
+  selectedLoraPath.value = ''; loraScaleVal.value = saved.loraScale; loraNotice.value = saved.loraRequiresReselection
+  setActiveVoiceId(saved.voiceId); selectedVoiceId.value = saved.voiceId
+  pendingAceDraft.value = null
+}, { immediate: true })
+
+watch(pendingAceReference, edit => {
+  if (!edit) return
+  if (edit.customLyrics !== undefined) { customLyrics.value = edit.customLyrics; mode.value = 'custom'; instrumental.value = false }
+  referenceImportId.value = edit.referenceImportId ?? null; pendingAceReference.value = null
+}, { immediate: true })
+
 const submitting = ref(false)
 const formError = ref('')
 const helpOpen = ref<null | 'style' | 'lyrics' | 'remix' | 'advanced'>(null)
@@ -192,7 +180,7 @@ const TASK_TYPES = computed<{ value: TaskType; label: string }[]>(() => [
 ])
 const TRACK_NAME_OPTIONS = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'keys', 'strings', 'brass', 'woodwinds', 'synth', 'percussion', 'other']
 const TIME_SIGNATURES = ['4/4', '3/4', '6/8', '2/4', '5/4', '7/8']
-// Native self-names, not translated - matches constants.VALID_LANGUAGES in
+// Native self-names remain the fallback; codes match constants.VALID_LANGUAGES in
 // the ACE-Step API (external/ACE-Step-1.5/acestep/constants.py).
 const VOCAL_LANGUAGES: { code: string; label: string }[] = [
   { code: 'en', label: 'English' },
@@ -335,6 +323,15 @@ watch(loraScaleVal, (scale) => {
   }, 300)
 })
 
+function removeStyleReference() {
+  styleReferenceRequired.value = false; styleAudioFile.value = null; savedStyleName.value = null
+  if (styleFileInput.value) styleFileInput.value.value = ''
+}
+function onStyleFileChange(e: Event) {
+  styleAudioFile.value = e.target instanceof HTMLInputElement ? e.target.files?.[0] ?? null : null
+  if (styleAudioFile.value) { styleReferenceRequired.value = false; savedStyleName.value = styleAudioFile.value.name }
+}
+
 function onRefFileChange(e: Event) {
   const file = e.target instanceof HTMLInputElement ? e.target.files?.[0] ?? null : null
   refAudioFile.value = file
@@ -399,11 +396,14 @@ async function submit() {
     return
   }
   if (!props.generationAvailable) { formError.value = t('aceGen.generationUnavailable'); return }
+  if (styleReferenceRequired.value && !styleAudioFile.value) { formError.value = t('generationWorkspace.reupload'); return }
+  if (loraNotice.value && !selectedLoraPath.value) { formError.value = t('generationWorkspace.reselectLora'); return }
 
   const req: GenerateMusicRequest = {
     audio_duration: durationAuto.value ? -1 : duration.value,
     batch_size: batchSize.value,
     audio_format: audioFormat.value,
+    use_cot_caption: useCotCaption.value,
   }
   let title = ''
 
@@ -462,11 +462,11 @@ async function submit() {
 
   submitting.value = true
   try {
-    await store.submit(req, refFile, title)
+    await store.submit(req, refFile, title, styleAudioFile.value, snapshot.value)
   } catch (err) {
-    formError.value = err instanceof Error ? err.message : String(err)
+    if (formAlive) formError.value = t(err instanceof TypeError ? 'generationWorkspace.invalid' : 'generationWorkspace.submitFailed')
   } finally {
-    submitting.value = false
+    if (formAlive) submitting.value = false
   }
 }
 </script>
@@ -482,57 +482,17 @@ async function submit() {
       <p v-if="!generationAvailable && !isVoiceReplacement" class="text-xs text-text-dim">{{ t('aceGen.generationUnavailable') }}</p>
 
       <template v-if="!isVoiceReplacement">
-      <!-- Preset bar -->
-      <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-panel-2 p-2">
-        <select
-          v-model="selectedPresetName"
-          class="flex-1 min-w-32 rounded border border-border bg-panel px-2 py-1 text-xs text-text"
-          @change="applyPreset(selectedPresetName)"
-        >
-          <option value="">{{ t('aceGen.presetPlaceholder') }}</option>
-          <option v-for="p in presets" :key="p.name" :value="p.name">{{ p.name }}</option>
-        </select>
-        <button
-          v-if="!showPresetInput"
-          type="button"
-          class="rounded border border-border px-2 py-1 text-xs text-text hover:bg-panel"
-          :title="t('aceGen.savePresetTitle')"
-          @click="showPresetInput = true"
-        >
-          {{ t('aceGen.addPreset') }}
-        </button>
-        <button
-          v-if="selectedPresetName"
-          type="button"
-          class="rounded px-1.5 py-1 text-xs text-status-failed hover:bg-status-failed/10"
-          :title="t('aceGen.deletePresetTitle')"
-          @click="deletePreset(selectedPresetName)"
-        >
-          ✕
-        </button>
-        <div v-if="showPresetInput" class="flex w-full items-center gap-1 pt-1">
-          <input
-            v-model="newPresetName"
-            :placeholder="t('aceGen.presetNamePlaceholder')"
-            class="flex-1 rounded border border-border bg-panel px-2 py-0.5 text-xs text-text"
-            @keyup.enter="saveCurrentPreset"
-          />
-          <button
-            type="button"
-            class="accent-gradient rounded px-2 py-0.5 text-xs text-white"
-            @click="saveCurrentPreset"
-          >
-            {{ t('aceGen.save') }}
-          </button>
-          <button
-            type="button"
-            class="text-xs text-text-dim hover:text-text"
-            @click="showPresetInput = false"
-          >
-            {{ t('aceGen.cancel') }}
-          </button>
-        </div>
-      </div>
+      <GenerationLibraryButton :settings="snapshot" />
+      <ReferencePreparationButton engine="ace_step" />
+      <p v-if="referenceNotice" class="text-xs text-status-queued">{{ t('generationWorkspace.reupload') }}</p>
+      <p v-if="loraNotice" class="text-xs text-status-queued">{{ t('generationWorkspace.reselectLora') }} <button type="button" class="underline" @click="loraNotice = false; savedLoraName = null">{{ t('generationWorkspace.removeLora') }}</button></p>
+      <label class="block space-y-1 text-xs text-text-dim">
+        <span>{{ t('generationWorkspace.styleReference') }}</span>
+        <input ref="styleFileInput" type="file" accept="audio/*" :aria-label="t('generationWorkspace.styleReference')" class="block w-full text-xs" @change="onStyleFileChange" />
+        <span>{{ t('generationWorkspace.styleReferenceHint') }}</span>
+      </label>
+      <button v-if="styleReferenceRequired || styleAudioFile" type="button" class="text-xs text-accent1 underline" @click="removeStyleReference">{{ t('generationWorkspace.removeStyleReference') }}</button>
+      <label class="flex items-center gap-2 text-xs text-text-dim"><input v-model="useCotCaption" type="checkbox" />{{ t('generationWorkspace.caption') }}</label>
 
       <div class="flex gap-2 rounded-lg bg-panel-2 p-1 text-sm">
         <button
@@ -589,7 +549,7 @@ async function submit() {
           <button type="button" class="text-xs text-accent1 hover:underline" @click="helpOpen = 'remix'">{{ t('common.help') }}</button>
         </label>
         <div v-if="useRefAudio" class="space-y-3 pt-1">
-          <input type="file" :aria-label="t('aceGen.refFileLabel')" :accept="isVoiceReplacement ? '.wav,.mp3,.flac,.ogg,.opus,.m4a' : 'audio/*'" :disabled="submitting" class="block w-full text-xs text-text-dim file:mr-3 file:rounded-md file:border-0 file:accent-gradient file:px-3 file:py-1.5 file:text-white" @change="onRefFileChange" />
+          <input ref="sourceFileInput" type="file" :aria-label="t('aceGen.refFileLabel')" :accept="isVoiceReplacement ? '.wav,.mp3,.flac,.ogg,.opus,.m4a' : 'audio/*'" :disabled="submitting" class="block w-full text-xs text-text-dim file:mr-3 file:rounded-md file:border-0 file:accent-gradient file:px-3 file:py-1.5 file:text-white" @change="onRefFileChange" />
           <p v-if="refAudioFile" class="text-xs text-text-dim">{{ refAudioFile.name }}</p>
 
           <ChipGroup v-model="taskType" :options="taskTypeOptions" />
@@ -701,7 +661,7 @@ async function submit() {
             <label class="text-xs text-text-dim">{{ t('aceGen.vocalLanguage') }}</label>
             <select v-model="vocalLanguage" class="w-full rounded-lg border border-border bg-panel-2 p-2 text-sm text-text">
               <option value="">{{ t('aceGen.vocalLanguageAuto') }}</option>
-              <option v-for="lang in VOCAL_LANGUAGES" :key="lang.code" :value="lang.code">{{ lang.label }}</option>
+              <option v-for="lang in VOCAL_LANGUAGES" :key="lang.code" :value="lang.code">{{ languageLabel(lang.code, locale, lang.label) }}</option>
             </select>
           </div>
           <div>

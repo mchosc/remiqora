@@ -1,6 +1,7 @@
 """Durable ACE generation API; browser polling observes backend-owned work."""
 from __future__ import annotations
 import logging
+from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -10,17 +11,27 @@ from .. import ace_jobs, video_jobs
 from ..audio_encoding import AudioEncodingError
 from ..resource_admission import ResourceBusyError, native_admission
 from ..contracts import AceJobResponse, AceJobReleaseResponse, AceJobsResponse, AceJobQueryResponse, AceQueryRequest, AceAdoptRequest, JsonObject
+from ..generation_contracts import AceGenerationSettings
 
 router = APIRouter(prefix='/api/ace-jobs', tags=['ace-jobs'])
 logger = logging.getLogger(__name__)
 
 
 @router.post('', response_model=AceJobReleaseResponse)
-async def submit(params: str = Form(...), title: str = Form('', max_length=500), voice_id: str | None = Form(None), ctx_audio: UploadFile | None = File(None)) -> AceJobReleaseResponse:
+async def submit(params: str = Form(..., max_length=262144), title: str = Form('', max_length=500),
+                 voice_id: str | None = Form(None), ctx_audio: Annotated[UploadFile | None, File()] = None,
+                 ref_audio: Annotated[UploadFile | None, File()] = None,
+                 settings: Annotated[str | None, Form(max_length=262144)] = None) -> AceJobReleaseResponse:
     try:
         parsed = TypeAdapter(JsonObject).validate_json(params)
+        # Snapshots and encoder metadata are owned here, never trusted as vendor
+        # fields supplied inside the opaque native parameter object.
+        parsed = {key: value for key, value in parsed.items() if not key.startswith('_')}
+        if settings is not None:
+            snapshot = AceGenerationSettings.model_validate_json(settings)
+            parsed['_generation_settings'] = TypeAdapter(JsonObject).validate_json(snapshot.model_dump_json())
         async with native_admission(video_jobs.work_busy):
-            return await ace_jobs.submit(parsed, title, voice_id, ctx_audio)
+            return await ace_jobs.submit(parsed, title, voice_id, ctx_audio, style_audio=ref_audio)
     except ResourceBusyError as exc:
         raise HTTPException(status_code=409, detail='video_work_busy') from exc
     except AudioEncodingError as exc:

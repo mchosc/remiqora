@@ -44,15 +44,15 @@ init_repo() {
   local name="$1" url="$2" ref="$3" patch="${4:-}"
   local dir="$EXTERNAL_DIR/$name"
   if [[ ! -d "$dir/.git" ]]; then
-    git clone "$url" "$dir"
+    git clone "$url" "$dir" >&2
   fi
-  git -C "$dir" fetch origin
-  git -C "$dir" checkout --detach "$ref"
+  git -C "$dir" fetch origin >&2
+  git -C "$dir" checkout --detach "$ref" >&2
   if [[ -n "$patch" ]]; then
     if git -C "$dir" apply --check "$patch" >/dev/null 2>&1; then
-      git -C "$dir" apply --whitespace=nowarn "$patch"
+      git -C "$dir" apply --whitespace=nowarn "$patch" >&2
     elif git -C "$dir" apply --reverse --check "$patch" >/dev/null 2>&1; then
-      echo "Patch already applied: $(basename "$patch")"
+      echo "Patch already applied: $(basename "$patch")" >&2
     else
       echo "Patch cannot be applied cleanly: $patch" >&2
       exit 3
@@ -69,7 +69,7 @@ ACE_DIR="$(init_repo ACE-Step-1.5 https://github.com/ace-step/ACE-Step-1.5.git "
 )
 
 step "audio.cpp / YuE2"
-AUDIOCPP_DIR="$(init_repo audio.cpp https://github.com/0xShug0/audio.cpp.git "$AUDIOCPP_REF")"
+AUDIOCPP_DIR="$(init_repo audio.cpp https://github.com/0xShug0/audio.cpp.git "$AUDIOCPP_REF" "$PATCHES_DIR/yue-model-resume.patch")"
 CUDA_TOOLKIT_PREFIX="${CUDA_TOOLKIT_PREFIX:-$(cd "$(dirname "$(command -v "$NVCC_BIN")")/.." && pwd)}"
 for header in cublas_v2.h cufft.h; do
   if [[ ! -f "$CUDA_TOOLKIT_PREFIX/include/$header" ]]; then
@@ -139,7 +139,10 @@ CUDA_BIN_DIR="$(dirname "$(command -v "$NVCC_BIN")")"
 CUDA_LIB_DIR="${CUDA_LIB_DIR:-$(cd "$CUDA_BIN_DIR/.." && pwd)/lib}"
 YUE2_DEVICE="${YUE2_DEVICE:-}"
 ACE_STEP_DEVICE="${ACE_STEP_DEVICE:-}"
-cat > "$ROOT/backend/.env" <<ENV
+ENV_TEMP="$(mktemp "$ROOT/backend/.env.setup.XXXXXX")"
+trap 'rm -f "${ENV_TEMP:-}"' EXIT
+chmod 600 "$ENV_TEMP"
+cat > "$ENV_TEMP" <<ENV
 ACE_STEP_DIR=$ACE_DIR
 YUE2_DIR=$AUDIOCPP_DIR
 DEMUCS_DIR=$DEMUCS_DIR
@@ -153,5 +156,15 @@ YUE2_SERVER_PORT=$YUE2_PORT
 YUE2_DEVICE=$YUE2_DEVICE
 ENV
 
-echo "Wrote $ROOT/backend/.env"
+# An existing environment may contain private tokens and deliberate overrides.
+# Publish defaults for review, preserving that user-owned file byte for byte.
+# A hard link creates the first .env atomically and also protects against a concurrent creator.
+if [[ ! -e "$ROOT/backend/.env" && ! -L "$ROOT/backend/.env" ]] && ln "$ENV_TEMP" "$ROOT/backend/.env" 2>/dev/null; then
+  rm -f "$ENV_TEMP"
+  echo "Wrote $ROOT/backend/.env"
+else
+  mv -f "$ENV_TEMP" "$ROOT/backend/.env.setup"
+  echo "Preserved $ROOT/backend/.env; generated defaults are in $ROOT/backend/.env.setup"
+fi
+ENV_TEMP=""
 echo "Linux model setup complete."

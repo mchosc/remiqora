@@ -235,11 +235,17 @@ async def put_mix_settings(track_id: int, settings: JsonObject = Body(...)):
 
 @router.delete("/{track_id}")
 async def delete_track(track_id: int):
+    from ..yue_jobs import ensure_track_removable
+    from ..reference_imports import ReferenceImportError, protect_track_removal as protect_track_references
     from ..voice_build import protect_track_removal
     from ..audio_versions import protect_track_versions_removal
     from ..audio_exports import protect_track_exports_removal, delete_track_exports
-    async with protect_track_versions_removal(track_id), protect_track_removal(track_id), protect_track_exports_removal(track_id):
-        delete_track_exports(track_id)
-        if not db.delete_track(track_id):
-            return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        async with protect_track_references(track_id), protect_track_versions_removal(track_id), protect_track_removal(track_id), protect_track_exports_removal(track_id):
+            ensure_track_removable(track_id)
+            delete_track_exports(track_id)
+            if not db.delete_track(track_id):
+                return JSONResponse({"error": "not found"}, status_code=404)
+    except ReferenceImportError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
     return {"deleted": True}

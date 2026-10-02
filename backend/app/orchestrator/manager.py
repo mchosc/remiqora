@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from ..config import ALLOW_CONCURRENT_MODELS, MODELS
+from ..contracts import JsonObject
 from .process import ManagedProcess, StartCancelled
 from .state import ModelRuntimeState, ModelStatus, OrchestratorState
 
@@ -33,7 +34,7 @@ class OrchestratorManager:
         self._lock = asyncio.Lock()
         self._cancel_start: dict[str, asyncio.Event] = {}
         self._stop_requests = 0
-        self._watchdog: asyncio.Task | None = None
+        self._watchdog: asyncio.Task[None] | None = None
 
     def start_watchdog(self) -> None:
         if self._watchdog is None:
@@ -69,7 +70,7 @@ class OrchestratorManager:
         for event in self._cancel_start.values():
             event.set()
 
-    def status_snapshot(self) -> dict:
+    def status_snapshot(self) -> JsonObject:
         return {
             "active_model": self.state.active_model,
             "models": {
@@ -105,6 +106,28 @@ class OrchestratorManager:
         async with self._lock:
             if self.state.active_model is not None:
                 await self._stop_model(self.state.active_model)
+
+    async def restart_model(self, model_id: str) -> None:
+        """Reset an owned model without resurrecting a user's Stop request.
+
+        Callers must hold the model's exclusive admission lease. Inference
+        cancellation uses this method only after establishing run ownership.
+        """
+        if model_id not in MODELS:
+            raise ValueError('Unknown model')
+        stop_requests = self._stop_requests
+        async with self._lock:
+            if self._stop_requests != stop_requests:
+                await self._stop_model(model_id)
+                return
+            status = self.state.models[model_id].status
+            if status == ModelStatus.STOPPED and not self._processes.get(model_id):
+                return
+            if status not in (ModelStatus.RUNNING, ModelStatus.ERROR, ModelStatus.STOPPING):
+                raise StartCancelled('Engine restart interrupted')
+            await self._stop_model(model_id)
+            if self._stop_requests == stop_requests:
+                await self._start_model(model_id)
 
     async def stop_all(self) -> None:
         self._cancel_pending_starts()

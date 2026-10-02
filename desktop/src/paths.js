@@ -24,6 +24,7 @@ function resourcePaths(isPackaged) {
       backend: path.join(base, 'backend'),
       frontendDist: path.join(base, 'frontend', 'dist'),
       acePatch: path.join(base, 'patches', 'ace-step.patch'),
+      modelManagerPatch: path.join(base, 'patches', 'yue-model-resume.patch'),
     };
   }
   const root = repoRoot();
@@ -31,6 +32,7 @@ function resourcePaths(isPackaged) {
     backend: path.join(root, 'backend'),
     frontendDist: path.join(root, 'frontend', 'dist'),
     acePatch: path.join(root, 'external', 'patches', 'ace-step.patch'),
+    modelManagerPatch: path.join(root, 'external', 'patches', 'yue-model-resume.patch'),
   };
 }
 

@@ -45,7 +45,7 @@ async function reference(container: HTMLElement) {
   toggle.click(); await settle()
 }
 async function upload(container: HTMLElement) {
-  const input = container.querySelector('input[type=file]')
+  const input = container.querySelector('input[aria-label="Reference track file"]')
   if (!(input instanceof HTMLInputElement)) throw new Error('Missing upload')
   const file = new File(['fixture'], 'original-song.wav', { type: 'audio/wav' })
   Object.defineProperty(input, 'files', { configurable: true, value: [file] })
@@ -61,7 +61,7 @@ it('offers replacement independently of ACE task support and hides irrelevant ge
   expect(container.querySelector('textarea')).toBeNull()
   expect(container.textContent).not.toContain('Number of variants')
   expect(container.textContent).not.toContain('Advanced settings')
-  expect(container.querySelector('input[type=file]')?.getAttribute('aria-label')).toBe('Reference track file')
+  expect(container.querySelector('input[aria-label="Reference track file"]')?.getAttribute('aria-label')).toBe('Reference track file')
 })
 
 it('replaces the uploaded song with the selected ready voice without requiring a style or generating music', async () => {
@@ -97,7 +97,7 @@ it('continues submitting ordinary covers through ACE with their style and refere
   if (!(text instanceof HTMLTextAreaElement)) throw new Error('Missing style prompt')
   text.value = 'Piano jazz'; text.dispatchEvent(new Event('input', { bubbles: true })); await settle()
   button(container, 'Generate').click(); await settle()
-  expect(actions.submit).toHaveBeenCalledWith(expect.objectContaining({ task_type: 'cover', prompt: 'Piano jazz' }), file, 'Piano jazz')
+  expect(actions.submit).toHaveBeenCalledWith(expect.objectContaining({ task_type: 'cover', prompt: 'Piano jazz' }), file, 'Piano jazz', null, expect.objectContaining({ useRefAudio: true }))
   expect(actions.submitVoiceReplacement).not.toHaveBeenCalled()
 })
 
@@ -145,7 +145,7 @@ it('selects a real installed model when the native inventory has no default', as
   if (!(text instanceof HTMLTextAreaElement)) throw new Error('Missing prompt')
   text.value = 'Jazz'; text.dispatchEvent(new Event('input', { bubbles: true })); await settle()
   button(container, 'Generate').click(); await settle()
-  expect(actions.submit).toHaveBeenCalledWith(expect.objectContaining({ model: 'xl-sft' }), null, 'Jazz')
+  expect(actions.submit).toHaveBeenCalledWith(expect.objectContaining({ model: 'xl-sft' }), null, 'Jazz', null, expect.objectContaining({ selectedModel: 'xl-sft' }))
 })
 
 it('allows uploaded voice replacement while ACE generation is unavailable', async () => {

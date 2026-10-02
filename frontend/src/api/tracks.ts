@@ -28,11 +28,11 @@ export async function saveTrack(meta: SaveTrackMeta, audio: Blob, audioExt: stri
   return apiFetch('/api/tracks', { method: 'POST', body: form }, parseSavedTrack)
 }
 
-export async function uploadTrack(file: File, title?: string): Promise<SavedTrack> {
+export async function uploadTrack(file: File, title?: string, signal?: AbortSignal): Promise<SavedTrack> {
   const form = new FormData()
   form.append('audio', file)
   if (title) form.append('title', title)
-  return apiFetch('/api/tracks/upload', { method: 'POST', body: form }, parseSavedTrack)
+  return apiFetch('/api/tracks/upload', { method: 'POST', body: form, signal }, parseSavedTrack)
 }
 
 export async function listTracks(model?: TrackOrigin, signal?: AbortSignal): Promise<SavedTrack[]> {

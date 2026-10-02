@@ -10,7 +10,7 @@ from typing import Callable
 
 from .config import DEMUCS_DIR, LOG_DIR
 from .job_lifecycle import await_cleanup, kill_process_tree, spawn_process
-from .stems import gpu_lock, separate_file
+from .stems import SpawnProcess, gpu_lock, separate_file
 from .gpu_lease import gpu_lease
 from .voice_contracts import SeparationQuality, VoiceSeparationOption, VoiceSeparationOptionsResponse
 
@@ -53,9 +53,10 @@ def find_vocal_output(root: Path) -> Path:
 async def separate_vocal(
     audio: Path, out_dir: Path, *, quality: SeparationQuality, log_name: str,
     on_proc: Callable[[asyncio.subprocess.Process | None], None] | None = None,
+    spawn: SpawnProcess | None = None,
 ) -> Path:
     if quality != "roformer":
-        stems = await separate_file(audio, out_dir, quality=quality, log_name=log_name, on_proc=on_proc, new_session=True,
+        stems = await separate_file(audio, out_dir, quality=quality, log_name=log_name, on_proc=on_proc, new_session=True, spawn=spawn,
                                     gpu_reason='voice_preparation', gpu_label=audio.name)
         vocal = stems.get("vocals")
         if vocal is None:
@@ -80,7 +81,10 @@ async def separate_vocal(
             shutil.copyfile(audio, inputs / f"source{audio.suffix}")
             LOG_DIR.mkdir(parents=True, exist_ok=True)
             with (LOG_DIR / f"{log_name}.log").open("w", encoding="utf-8") as log:
-                proc = await spawn_process(*command, cwd=str(ROFORMER_DIR), stdout=log, stderr=asyncio.subprocess.STDOUT)
+                if spawn is None:
+                    proc = await spawn_process(*command, cwd=str(ROFORMER_DIR), stdout=log, stderr=asyncio.subprocess.STDOUT)
+                else:
+                    proc = await spawn(command, ROFORMER_DIR, os.environ.copy(), log.fileno())
                 if on_proc:
                     on_proc(proc)
                 code = await proc.wait()

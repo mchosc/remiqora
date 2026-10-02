@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from .. import db
+from .. import db, audio_exports
 from .. import stems
 
 from ..client_contracts import StemsStatusResponse
@@ -63,9 +63,13 @@ async def delete_stems(track_id: int):
         raise HTTPException(status_code=404, detail="track not found")
     if stems.is_active(track_id):
         raise HTTPException(status_code=409, detail="separation is in progress")
-    if not db.delete_track_stems(track_id):
-        raise HTTPException(status_code=404, detail="no stems to delete")
-    stems.forget(track_id)
+    try:
+        async with audio_exports.protect_stem_exports_removal(track_id):
+            if not db.delete_track_stems(track_id):
+                raise HTTPException(status_code=404, detail="no stems to delete")
+            stems.forget(track_id)
+    except audio_exports.AudioExportError as exc:
+        raise HTTPException(409, detail=exc.code) from exc
     return {"deleted": True}
 
 
@@ -73,10 +77,7 @@ async def delete_stems(track_id: int):
 async def stem_file(track_id: int, stem_name: str):
     if stem_name not in stems.STEM_NAMES:
         raise HTTPException(status_code=404, detail="unknown stem")
-    row = db.get_track(track_id)
-    if not row or not row["stems_json"]:
-        raise HTTPException(status_code=404, detail="stems not found")
-    path = json.loads(row["stems_json"]).get(stem_name)
-    if not path or not Path(path).exists():
-        raise HTTPException(status_code=404, detail="stem file not found")
-    return FileResponse(path)
+    try:
+        return FileResponse(audio_exports.stem_source(track_id, stem_name))
+    except audio_exports.AudioExportError as exc:
+        raise HTTPException(404, detail=exc.code) from exc

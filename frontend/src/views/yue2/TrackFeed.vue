@@ -30,7 +30,7 @@ function noteActivity(kind: 'playing' | 'processing', id: string, active: boolea
   if (active) next.add(id); else next.delete(id)
   target.value = next
 }
-function isActive(job: typeof store.jobs[number]): boolean { return job.status === 'queued' || job.status === 'running' || job.voiceApply === 'running' || processingJobs.value.has(job.id) || job.dbId != null && activeTrackIds.value.has(job.dbId) }
+function isActive(job: typeof store.jobs[number]): boolean { return job.status === 'queued' || job.status === 'running' || job.status === 'stopping' || job.voiceApply === 'running' || processingJobs.value.has(job.id) || job.dbId != null && activeTrackIds.value.has(job.dbId) }
 const { pageItems, barProps, setPage, setPageSize, resetPage } = usePagination(() => visibleJobs.value.filter(job => !isActive(job)))
 watch([sortOrder, dateFrom, dateTo, favoritesOnly], resetPage)
 const pageIds = computed(() => new Set(pageItems.value.map(job => job.id)))
@@ -49,6 +49,7 @@ watch(() => store.jobs.map((job) => job.dbId).join(','), () => { void favorites.
         <button type="button" class="rounded-md px-2 py-1" :class="view === 'cards' ? 'bg-panel-2 text-text' : 'text-text-dim'" @click="setView('cards')">{{ t('feed.viewCards') }}</button>
       </div>
     </div>
+    <p v-if="store.historyError" role="alert" class="text-xs text-status-failed">{{ store.historyError }}</p>
     <p v-if="favorites.loading" class="text-xs text-text-dim" role="status">{{ t('trackFavorites.loading') }}</p>
     <p v-if="favorites.loadError" class="text-sm text-status-failed" role="alert">{{ t('trackFavorites.loadFailed') }} <button type="button" class="text-accent1 underline" @click="favorites.refresh()">{{ t('trackFavorites.retry') }}</button></p>
 

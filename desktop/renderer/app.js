@@ -74,7 +74,7 @@
     if (item.id === 'gpu') detail = item.vramMiB ? `${item.name}, ${Math.round(item.vramMiB / 1024)} ${t('unit.gb')}` : item.name;
     if (item.id === 'driver') detail = t('row.driver.detail', { v: item.driver, r: item.required });
     if (item.id === 'disk') detail = t('row.disk.detail', { free: fmtBytes(item.freeBytes), req: fmtBytes(item.requiredBytes) });
-    if (item.id === 'network') detail = item.ok ? t('row.network.ok') : t('row.network.bad');
+    if (item.id === 'network') detail = item.required === false ? t('row.network.not-needed') : item.ok ? t('row.network.ok') : t('row.network.bad');
     if (item.id === 'platform') detail = item.platform;
     return `<li>${icon(item.ok ? 'ok' : 'err')}<span class="name">${esc(t('row.' + item.id))}</span><span class="state">${esc(detail)}</span></li>`;
   }
@@ -138,7 +138,7 @@
   // ---------- 2. download ----------
   function initRows() {
     rows = {};
-    for (const c of ctx.plan) rows[c.id] = { status: c.done ? 'done' : 'queued', done: 0, total: 0, note: '', weight: c.weight };
+    for (const c of ctx.plan) rows[c.id] = { status: c.done ? 'done' : 'queued', done: 0, total: 0, note: '', weight: c.done || c.skipped ? 0 : c.weight };
     samples = [];
     paused = false;
   }

@@ -8,7 +8,39 @@ import sys
 from collections.abc import Awaitable, Mapping
 from typing import IO, TypeVar
 
+from .orchestrator.windows_job import WindowsJob
+
 T = TypeVar("T")
+
+# Strong ownership survives an exited wrapper or a failed descendant drain.
+# Only verified empty jobs are removed; PID reuse cannot alias a process object.
+_windows_jobs: dict[asyncio.subprocess.Process, WindowsJob] = {}
+_windows_drains: dict[asyncio.subprocess.Process, asyncio.Task[None]] = {}
+
+
+def register_windows_job(proc: asyncio.subprocess.Process, job: WindowsJob) -> None:
+    previous = _windows_jobs.get(proc)
+    if previous is not None and previous is not job:
+        raise RuntimeError("worker_job_already_registered")
+    _windows_jobs[proc] = job
+
+
+async def drain_windows_job(job: WindowsJob) -> None:
+    """Require kernel accounting proof before releasing a job query handle."""
+    while job.active_processes() != 0:
+        await asyncio.sleep(0.02)
+
+
+async def _kill_windows_tree(proc: asyncio.subprocess.Process, job: WindowsJob) -> None:
+    # EOF also covers cancellation before the wrapper has joined its job.
+    if proc.stdin is not None:
+        proc.stdin.close()
+    job.terminate()
+    async with asyncio.timeout(10):
+        await proc.communicate()
+        await drain_windows_job(job)
+    job.close()
+    del _windows_jobs[proc]
 
 
 async def await_cleanup(operation: Awaitable[T]) -> T:
@@ -44,6 +76,20 @@ async def cancel_and_wait(task: asyncio.Task[None] | None) -> None:
 
 async def kill_process_tree(proc: asyncio.subprocess.Process | None) -> None:
     if proc is None:
+        return
+    job = _windows_jobs.get(proc)
+    if job is not None:
+        # Cancellation and owner-finally may converge on this same process.
+        # One owned drain prevents concurrent PIPE reads and handle double-close.
+        drain = _windows_drains.get(proc)
+        if drain is None:
+            drain = asyncio.create_task(_kill_windows_tree(proc, job))
+            _windows_drains[proc] = drain
+        try:
+            await await_cleanup(drain)
+        finally:
+            if drain.done() and _windows_drains.get(proc) is drain:
+                del _windows_drains[proc]
         return
     if sys.platform == "win32":
         if proc.returncode is None:

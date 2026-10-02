@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { IS_WINDOWS } = require('../paths');
+const { ensureWritableDir } = require('../config');
 
 /** Runs a command, never rejects: { ok, stdout, timedOut }. */
 function run(cmd, args, timeout = 5000) {
@@ -78,12 +79,32 @@ async function isOnline(fetchImpl = fetch) {
   }
 }
 
+/** Conservative staging/cache allowance, computed from unfinished components only. */
+function installationRequirements(plan) {
+  const pending = plan.filter((c) => !c.done && !c.skipped);
+  return {
+    requiredBytes: Math.ceil(pending.reduce((n, c) => n + c.weight, 0) * 1.5),
+    networkRequired: pending.some((c) => c.network === true),
+  };
+}
+
+/** Enforced by the installer itself, including updates with no network work. */
+async function checkInstallation({ dataRoot, requiredBytes, networkRequired, fetchImpl = fetch }) {
+  try { await ensureWritableDir(dataRoot); }
+  catch { return { blocking: { code: 'not-writable' } }; }
+  const free = await freeBytes(dataRoot);
+  if (free < requiredBytes) return { blocking: { code: 'no-disk', free, required: requiredBytes } };
+  if (networkRequired && !(await isOnline(fetchImpl))) return { blocking: { code: 'offline' } };
+  return { blocking: null };
+}
+
 /**
  * Everything the first-run screen shows before downloading. `items` is the list of rows,
  * `blocking` is the first problem that stops the setup (or null).
  */
-async function runChecks({ platform, dataRoot, manifest, fetchImpl = fetch }) {
+async function runChecks({ platform, dataRoot, manifest, plan, fetchImpl = fetch }) {
   const req = manifest.requirements;
+  const { requiredBytes, networkRequired } = plan ? installationRequirements(plan) : { requiredBytes: req.minFreeBytes, networkRequired: true };
   const items = [];
   let blocking = null;
   const fail = (code, extra = {}) => { blocking ||= { code, ...extra }; };
@@ -98,7 +119,7 @@ async function runChecks({ platform, dataRoot, manifest, fetchImpl = fetch }) {
   const [gpu, free, online] = await Promise.all([
     platform === 'win32-x64' ? detectNvidiaGpu() : Promise.resolve(null),
     freeBytes(dataRoot),
-    isOnline(fetchImpl),
+    networkRequired ? isOnline(fetchImpl) : Promise.resolve(true),
   ]);
 
   if (platform === 'win32-x64') {
@@ -110,14 +131,14 @@ async function runChecks({ platform, dataRoot, manifest, fetchImpl = fetch }) {
     items.push({ id: 'gpu', ok: true, name: 'Apple Silicon', vramMiB: Math.round(os.totalmem() / 2 ** 20) });
   }
 
-  const enoughDisk = free >= req.minFreeBytes;
-  items.push({ id: 'disk', ok: enoughDisk, freeBytes: free, requiredBytes: req.minFreeBytes });
-  if (!enoughDisk) fail('no-disk', { free, required: req.minFreeBytes });
+  const enoughDisk = free >= requiredBytes;
+  items.push({ id: 'disk', ok: enoughDisk, freeBytes: free, requiredBytes });
+  if (!enoughDisk) fail('no-disk', { free, required: requiredBytes });
 
-  items.push({ id: 'network', ok: online });
+  items.push({ id: 'network', ok: online, required: networkRequired });
   if (!online) fail('offline');
 
   return { items, blocking };
 }
 
-module.exports = { detectNvidiaGpu, evaluateGpu, freeBytes, isOnline, runChecks };
+module.exports = { detectNvidiaGpu, evaluateGpu, freeBytes, isOnline, runChecks, checkInstallation, installationRequirements };

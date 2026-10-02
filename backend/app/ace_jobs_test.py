@@ -4,16 +4,50 @@ import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 import httpx
-from fastapi import HTTPException
+from pydantic import TypeAdapter
+from fastapi import HTTPException, UploadFile
+from app.contracts import JsonObject
 from app import db, ace_jobs
 from app import audio_versions
 
 class AceJobsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_and_style_audio_are_forwarded_independently(self) -> None:
+        requests: list[bytes] = []
+        async def engine(request: httpx.Request) -> httpx.Response:
+            requests.append(await request.aread())
+            return httpx.Response(200, json={'code': 200, 'data': {'task_id': 'reference-job', 'status': 'queued', 'queue_position': 0}})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(engine))
+        source = UploadFile(filename='source.wav', file=io.BytesIO(b'source-fixture'))
+        style = UploadFile(filename='style.flac', file=io.BytesIO(b'style-fixture'))
+        with patch.object(ace_jobs, '_engine_running', return_value=True), \
+             patch.object(ace_jobs.httpx, 'AsyncClient', return_value=client), \
+             patch.object(ace_jobs, 'launch'):
+            released = await ace_jobs.submit({'lyrics': 'test', 'use_cot_caption': False}, 'Reference', None, source, style_audio=style)
+        self.assertEqual(released.task_id, 'reference-job')
+        self.assertIn(b'name="ctx_audio"', requests[0])
+        self.assertIn(b'source-fixture', requests[0])
+        self.assertIn(b'name="ref_audio"', requests[0])
+        self.assertIn(b'style-fixture', requests[0])
+        self.assertIn(b'name="use_cot_caption"\r\n\r\nfalse', requests[0])
+
+    async def test_internal_generation_snapshot_does_not_reach_native_engine(self) -> None:
+        requests: list[JsonObject] = []
+        async def engine(request: httpx.Request) -> httpx.Response:
+            requests.append(TypeAdapter(JsonObject).validate_json(await request.aread()))
+            return httpx.Response(200, json={'code': 200, 'data': {'task_id': 'snapshot-job', 'status': 'queued', 'queue_position': 0}})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(engine))
+        with patch.object(ace_jobs, '_engine_running', return_value=True), \
+             patch.object(ace_jobs.httpx, 'AsyncClient', return_value=client), \
+             patch.object(ace_jobs, 'launch'):
+            await ace_jobs.submit({'lyrics': 'test', '_generation_settings': {'engine': 'ace_step'}}, 'Snapshot', None, None)
+        self.assertNotIn('_generation_settings', requests[0])
+
     async def test_deletion_reserves_failed_batch_against_concurrent_save_retry(self) -> None:
         self.create_job()
         results = [{'file':'/v1/audio?path=one.wav'}, {'file':'/v1/audio?path=two.wav'}]

@@ -5,13 +5,14 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { downloadFile } = require('./download');
 const { extract, extractAtomic } = require('./extract');
-const { applyGitPatch } = require('./patch');
+const { applyGitPatch, isGitPatchApplied } = require('./patch');
 const { runCommand, cleanEnv } = require('../proc');
 const { IS_WINDOWS } = require('../paths');
 
 const exists = (p) => fsp.access(p).then(() => true, () => false);
 const sum = (list) => list.reduce((a, b) => a + b, 0);
 const sha1 = (text) => crypto.createHash('sha1').update(text).digest('hex').slice(0, 12);
+const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
 /** Environment for uv: everything (Python, wheel cache) stays under the data root the user chose. */
 function uvEnv(L) {
@@ -108,6 +109,36 @@ async function placeEngineFiles(extracted, L) {
   }
 }
 
+/** Restore interrupted source swaps; never discard either set of conflicting models. */
+async function recoverAceStepSource(current) {
+  const previous = `${current}.previous`;
+  if (!(await exists(previous))) return;
+  if (!(await exists(current))) { await fsp.rename(previous, current); return; }
+  const oldModels = path.join(previous, 'checkpoints');
+  const newModels = path.join(current, 'checkpoints');
+  if (await exists(oldModels)) {
+    if (await exists(newModels)) return;
+    await fsp.rename(oldModels, newModels);
+  }
+  await fsp.rm(previous, { recursive: true, force: true });
+}
+
+/** Promote staged sources and recover old checkpoints after either rename was interrupted. */
+async function replaceAceStepSource(current, staged) {
+  await recoverAceStepSource(current);
+  const previous = `${current}.previous`;
+  // A previous conflict remains recoverable across later updates, too.
+  if (await exists(previous)) await fsp.rename(previous, `${current}.preserved-${crypto.randomUUID()}`);
+  if (await exists(current)) await fsp.rename(current, previous);
+  try {
+    await fsp.rename(staged, current);
+    await recoverAceStepSource(current);
+  } catch (error) {
+    await recoverAceStepSource(current);
+    throw error;
+  }
+}
+
 /**
  * The ordered list of things the first run installs. Each component:
  *   id, weight (bytes, for the overall bar), version (a change re-runs it),
@@ -119,7 +150,9 @@ function buildComponents({ L, manifest, platform, resources }) {
   const uvAsset = manifest.uv.assets[platform];
   const ffAsset = manifest.ffmpeg.assets[platform];
   const logFile = path.join(L.logs, 'setup.log');
-  const patchHash = () => fsp.readFile(resources.acePatch, 'utf8').then(sha1).catch(() => 'nopatch');
+  const aceVersion = `${manifest.aceStep.commit}:${sha256(fs.readFileSync(resources.acePatch))}`;
+  const modelManagerPatch = fs.readFileSync(resources.modelManagerPatch || path.join(path.dirname(resources.acePatch), 'yue-model-resume.patch'), 'utf8');
+  const modelManagerVersion = sha256(modelManagerPatch);
 
   const uv = {
     id: 'uv',
@@ -199,14 +232,42 @@ function buildComponents({ L, manifest, platform, resources }) {
     },
   };
 
+  const modelManagerResume = {
+    id: 'model-manager-resume',
+    weight: Buffer.byteLength(modelManagerPatch),
+    network: false,
+    version: modelManagerVersion,
+    async verify() {
+      const marker = await fsp.readFile(path.join(L.yue2, 'tools', '.remiqora-resume-version'), 'utf8').catch(() => '');
+      const script = await fsp.readFile(path.join(L.yue2, 'tools', 'model_manager_v2.py')).catch(() => null);
+      return script !== null && marker === `${modelManagerVersion}:${sha256(script)}`
+        && await isGitPatchApplied(modelManagerPatch, L.yue2);
+    },
+    async install() {
+      if (!(await isGitPatchApplied(modelManagerPatch, L.yue2))) await applyGitPatch(modelManagerPatch, L.yue2);
+      const script = await fsp.readFile(path.join(L.yue2, 'tools', 'model_manager_v2.py'));
+      const marker = path.join(L.yue2, 'tools', '.remiqora-resume-version');
+      const temporary = `${marker}.${crypto.randomUUID()}.tmp`;
+      try {
+        await fsp.writeFile(temporary, `${modelManagerVersion}:${sha256(script)}`, { flag: 'wx' });
+        await fsp.rename(temporary, marker);
+      } finally { await fsp.rm(temporary, { force: true }); }
+    },
+  };
+
   const aceStep = {
     id: 'ace-step',
     weight: manifest.aceStep.approxBytes,
-    version: manifest.aceStep.commit.slice(0, 7),
-    verify: async () => (await exists(path.join(L.aceStep, '.remiqora-patched'))) && (await exists(path.join(L.aceStep, '.venv'))),
+    version: aceVersion,
+    verify: async () => {
+      await recoverAceStepSource(L.aceStep);
+      return (await fsp.readFile(path.join(L.aceStep, '.remiqora-patched'), 'utf8').catch(() => '')).trim() === aceVersion
+        && (await exists(path.join(L.aceStep, '.venv')));
+    },
     async install(ctx, report) {
       const marker = path.join(L.aceStep, '.remiqora-patched');
-      const wanted = await patchHash();
+      await recoverAceStepSource(L.aceStep);
+      const wanted = aceVersion;
       const patched = (await exists(marker)) && (await fsp.readFile(marker, 'utf8')).trim() === wanted;
       if (!patched) {
         // The source archive is a sliver of this component's weight; `uv sync` below is the bulk.
@@ -216,8 +277,7 @@ function buildComponents({ L, manifest, platform, resources }) {
         await extract(archive, tmp, { stripComponents: 1 });
         await applyGitPatch(await fsp.readFile(resources.acePatch, 'utf8'), tmp);
         await fsp.writeFile(path.join(tmp, '.remiqora-patched'), wanted);
-        await fsp.rm(L.aceStep, { recursive: true, force: true });
-        await fsp.rename(tmp, L.aceStep);
+        await replaceAceStepSource(L.aceStep, tmp);
         await fsp.rm(archive, { force: true });
       }
       await withCacheGrowth(L.uvCache, manifest.aceStep.approxBytes, report, () =>
@@ -279,7 +339,7 @@ function buildComponents({ L, manifest, platform, resources }) {
   };
 
   // Order matters: the backend venv provides the Python that runs the weights downloader.
-  return [uv, ffmpeg, engineStep, backendEnv, aceStep, aceModels, demucs, weights];
+  return [uv, ffmpeg, engineStep, modelManagerResume, backendEnv, aceStep, aceModels, demucs, weights].map((c) => ({ ...c, network: c.network !== false }));
 }
 
 /** Path of ffmpeg: a pinned build under tools/ffmpeg where there is one, otherwise whatever the system has. */
@@ -294,4 +354,4 @@ function ffmpegExecutable(L, manifest, platform) {
   return path.join('/usr/local/bin', 'ffmpeg');
 }
 
-module.exports = { buildComponents, ffmpegExecutable, demucsProject, dirSize };
+module.exports = { buildComponents, ffmpegExecutable, demucsProject, dirSize, recoverAceStepSource, replaceAceStepSource };

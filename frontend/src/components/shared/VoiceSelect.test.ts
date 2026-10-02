@@ -31,7 +31,7 @@ it('clears a validated existing unusable cached voice so ordinary ACE generation
   const selected = vi.fn<(id: string | null) => void>()
   await mount(selected)
   await useAceStepStore().submit({ prompt: 'Folk' }, null, 'Ordinary generation')
-  expect(ace.releaseTask).toHaveBeenCalledWith({ prompt: 'Folk' }, null, 'Ordinary generation', null)
+  expect(ace.releaseTask).toHaveBeenCalledWith({ prompt: 'Folk' }, null, 'Ordinary generation', null, undefined, undefined)
   expect(voices.getActiveVoiceId()).toBeNull()
   expect(selected).toHaveBeenLastCalledWith(null)
 })

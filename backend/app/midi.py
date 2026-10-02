@@ -7,9 +7,8 @@ consequences shape this module:
 * YuE2 must be the *active* model, otherwise there is no server to talk to
   (the route checks this and refuses up front rather than queueing a job that
   cannot run).
-* "Cancel" can only abandon our side of the HTTP call - the server has no
-  task-cancel endpoint, so its GPU work runs to completion either way. This
-  matches how the frontend already cancels a YuE2 generation (AbortController).
+* Cancellation retains exclusive server admission while an owned stop/reset
+  drains inference. Transcription cannot overlap a generator model switch.
 
 One job per (track, source) pair: the full mix and each Demucs stem are
 transcribed independently, each constrained to the instrument groups that
@@ -31,7 +30,7 @@ from typing import Literal, Optional
 
 import httpx
 
-from . import db
+from . import db, native_yue
 from .job_lifecycle import await_cleanup, cancel_and_wait, communicate_process, request_cancel, spawn_process
 
 logger = logging.getLogger(__name__)
@@ -68,8 +67,8 @@ _client = httpx.AsyncClient(timeout=None)
 
 # Serializes transcriptions against each other so a "transcribe every stem"
 # burst doesn't put four decodes on the GPU at once. It deliberately does not
-# lock against YuE2 generation: that runs through the frontend's own proxy
-# calls, and MuScriptor-Small is tiny next to YuE2-3B.
+# replace server admission: owned_session also excludes YuE generation and
+# reference melody extraction through the same native process.
 _gpu_lock = asyncio.Lock()
 
 
@@ -249,34 +248,37 @@ async def _run(track_id: int, source: str) -> None:
 
             base_url = MODELS["yue2"].proxy_target
             wav_path = await _to_mono_wav(audio_path)
-            await _ensure_model_loaded(base_url)
+            async with native_yue.owned_session() as session:
+                session.mutating = True
+                await _ensure_model_loaded(base_url)
 
-            resp = await _client.post(
-                f"{base_url}/v1/tasks/run",
-                json={
-                    "model": MUSCRIPTOR_MODEL_ID,
-                    "request": {
-                        "audio": _server_path(wav_path),
-                        "options": {
-                            "instruments": SOURCE_INSTRUMENTS[source],
-                            "output_format": "midi",
-                            # MuScriptor transcribes in 5s chunks. With the
-                            # server default (prelude_forcing=true) every chunk
-                            # after the first is forced to open with the notes
-                            # the previous one left sounding, and once a chunk
-                            # comes out empty the next one is pushed straight to
-                            # EOS - so a quiet intro silences everything after
-                            # it (a psytrance track here stayed empty until
-                            # 1:50, and its 0-60s slice transcribed fine on its
-                            # own). Letting the model predict its own tie
-                            # section costs a few notes clipped at chunk seams
-                            # and roughly doubles what gets transcribed.
-                            "prelude_forcing": "false",
+                resp = await _client.post(
+                    f"{base_url}/v1/tasks/run",
+                    json={
+                        "model": MUSCRIPTOR_MODEL_ID,
+                        "request": {
+                            "audio": _server_path(wav_path),
+                            "options": {
+                                "instruments": SOURCE_INSTRUMENTS[source],
+                                "output_format": "midi",
+                                # MuScriptor transcribes in 5s chunks. With the
+                                # server default (prelude_forcing=true) every chunk
+                                # after the first is forced to open with the notes
+                                # the previous one left sounding, and once a chunk
+                                # comes out empty the next one is pushed straight to
+                                # EOS - so a quiet intro silences everything after
+                                # it (a psytrance track here stayed empty until
+                                # 1:50, and its 0-60s slice transcribed fine on its
+                                # own). Letting the model predict its own tie
+                                # section costs a few notes clipped at chunk seams
+                                # and roughly doubles what gets transcribed.
+                                "prelude_forcing": "false",
+                            },
                         },
                     },
-                },
-            )
-            resp.raise_for_status()
+                )
+                resp.raise_for_status()
+                session.mutating = False
             midi_bytes = _midi_bytes_from_result(resp.json())
             if not midi_bytes:
                 job.status = "failed"

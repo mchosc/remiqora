@@ -1,3 +1,5 @@
+import { referenceWorkspaceRu } from './referenceWorkspace'
+import { generationWorkspaceRu } from './generationWorkspace'
 import { videoWorkspaceRu, videoErrorsRu } from './videoWorkspace'
 import { settingsWorkspaceRu } from './settingsWorkspace'
 import { trackAudioRu } from './trackAudio'
@@ -5,6 +7,8 @@ import { trackFavoritesRu } from './trackFavorites'
 import { upstreamLibraryRu } from './upstreamLibrary'
 import { upstreamWorkspaceRu } from './upstreamWorkspace'
 export default {
+  referenceWorkspace: referenceWorkspaceRu,
+  generationWorkspace: generationWorkspaceRu,
   ...upstreamLibraryRu,
   upstreamWorkspace: upstreamWorkspaceRu,
   trackFavorites: trackFavoritesRu,
@@ -747,7 +751,7 @@ export default {
         whatHeader: 'Что делает',
         rows: [
           { param: 'CFG scale', what: 'Насколько строго модель следует стилю/тексту. Выше — точнее по описанию, но риск артефактов при слишком высоких значениях; ниже — естественнее, но менее предсказуемо.' },
-          { param: 'Шаги инференса', what: 'Число шагов генерации звука. Больше — потенциально чище результат, но дольше ждать; после определённого значения прирост качества почти не заметен.' },
+          { param: 'Шаги инференса', what: 'По умолчанию YuE использует 8 акустических шагов. Больше шагов требуют времени; улучшение качества звука для этой сборки не измерено.' },
           { param: 'Semantic sampling', what: 'Параметры того, как языковая модель выбирает следующий звуковой токен при генерации аудио (аналог настроек текстовых LLM). Влияют на итоговый звук, а не на текст.' },
           { param: 'ABC planner sampling', what: 'Те же параметры, но для этапа построения символьного плана (ABC) — актуальны только при cot: melody/full, когда партитура генерируется моделью, а не задаётся вручную.' },
         ],

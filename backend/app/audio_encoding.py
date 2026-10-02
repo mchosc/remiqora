@@ -83,10 +83,12 @@ class CreateAudioExportRequest(EncodingContract):
     settings: AudioEncodingSettings | None = None
 
 
-class AudioExportResponse(EncodingContract):
+StemName = Literal["vocals", "drums", "bass", "other"]
+
+
+class AudioExportResult(EncodingContract):
     id: AudioVersionId
     track_id: int = Field(gt=0)
-    version_id: AudioVersionId
     format: AudioExportFormat
     status: JobStatus
     error_code: str = ""
@@ -94,6 +96,22 @@ class AudioExportResponse(EncodingContract):
     filename: str | None = None
     audio_url: str | None = None
     settings: AudioEncodingSettings
+
+
+class AudioExportResponse(AudioExportResult):
+    version_id: AudioVersionId
+
+
+class StemAudioExportResponse(AudioExportResult):
+    stem_name: StemName
+
+
+class StemAudioExportsResponse(EncodingContract):
+    exports: list[StemAudioExportResponse] = Field(default_factory=list)
+
+
+class CreateStemExportRequest(EncodingContract):
+    format: AudioExportFormat = 'mp3'
 
 
 class AudioExportsResponse(EncodingContract):
@@ -210,4 +228,7 @@ CLIENT_MODELS: list[type[BaseModel]] = [
     CreateAudioExportRequest,
     AudioExportResponse,
     AudioExportsResponse,
+    StemAudioExportResponse,
+    StemAudioExportsResponse,
+    CreateStemExportRequest,
 ]

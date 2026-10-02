@@ -148,6 +148,18 @@ ACE_STEP_ON_DEMAND_MODEL_LOAD = os.getenv("ACE_STEP_ON_DEMAND_MODEL_LOAD", "").s
 YUE2_SERVER_PORT = int(os.getenv("YUE2_SERVER_PORT", "8080"))
 YUE2_SERVER_HOST = os.getenv("YUE2_SERVER_HOST", "127.0.0.1")
 YUE2_DEVICE = os.getenv("YUE2_DEVICE", "").strip()
+# A locally built engine is opt-in and carries reproducible source/patch and
+# binary identities. A foreign binary without that proof is never substituted.
+_YUE2_CUSTOM_BINARY = os.getenv('YUE2_SERVER_BIN', '').strip()
+YUE2_PROGRESS_AVAILABLE = False
+_YUE2_CUSTOM_BACKEND: str | None = None
+if _YUE2_CUSTOM_BINARY:
+    from scripts.setup_yue_native import read_build_manifest
+    _custom_path = Path(_YUE2_CUSTOM_BINARY).expanduser().resolve()
+    _build_manifest = read_build_manifest(_custom_path)
+    _YUE2_CUSTOM_BINARY = str(_custom_path)
+    _YUE2_CUSTOM_BACKEND = _build_manifest.backend
+    YUE2_PROGRESS_AVAILABLE = _build_manifest.progress_schema == 1
 ALLOW_CONCURRENT_MODELS = bool(ACE_STEP_DEVICE and YUE2_DEVICE and ACE_STEP_DEVICE != YUE2_DEVICE)
 CUDA_LIB_DIR = _env_path("CUDA_LIB_DIR", str(CUDA_BIN_DIR.parent / "lib"))
 
@@ -220,8 +232,9 @@ MODELS: dict[str, ModelDefinition] = {
                 name="yue2_server",
                 cwd=YUE2_DIR,
                 cmd=[
-                    str(YUE2_DIR / "build" / _YUE2_BUILD_PRESET / "bin" / _YUE2_SERVER_BIN),
-                    "--ui", "--ui-management", "--backend", _YUE2_BACKEND,
+                    _YUE2_CUSTOM_BINARY or str(YUE2_DIR / "build" / _YUE2_BUILD_PRESET / "bin" / _YUE2_SERVER_BIN),
+                    "--ui", "--ui-management", "--backend", _YUE2_CUSTOM_BACKEND or _YUE2_BACKEND,
+                    "--max-loaded-models", "1",
                     "--host", YUE2_SERVER_HOST,
                     "--port", str(YUE2_SERVER_PORT),
                     *(["--device", YUE2_DEVICE] if YUE2_DEVICE else []),
@@ -244,6 +257,8 @@ MODELS: dict[str, ModelDefinition] = {
 # checkout keeps logs inside the data folder.
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR = resolve_data_dir(_env_path("REMIQORA_DATA_DIR", str(_DEFAULT_DATA_DIR)))
+if YUE2_PROGRESS_AVAILABLE:
+    MODELS['yue2'].processes[0].env['REMIQORA_YUE2_PROGRESS_PATH'] = str(DATA_DIR / 'yue2-progress.json')
 _LEGACY_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR = _env_path("REMIQORA_LOG_DIR", str(DATA_DIR / "logs"))
 LOG_TAIL_LINES = 40

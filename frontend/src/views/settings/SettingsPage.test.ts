@@ -11,6 +11,7 @@ import { i18n, setLocale } from '../../i18n'
 import { audioSettingsResponse } from './settingsTestFixtures'
 import type { CompleteAudioSettingsResponse } from '../../api/audioSettings'
 
+vi.mock('../../api/generationLibrary', async original => ({ ...await original<typeof import('../../api/generationLibrary')>(), getSettings: vi.fn().mockResolvedValue({ history_limit: 100, revision: 1 }) }))
 vi.mock('../../api/audioSettings', () => ({ getAudioSettings: vi.fn(), saveAudioSettings: vi.fn() }))
 vi.mock('../../api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }))
 vi.mock('../../api/voices', async (original) => ({ ...await original<typeof import('../../api/voices')>(), listVoices: vi.fn().mockResolvedValue([]) }))

@@ -1,28 +1,38 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
+import { rememberGenerationJob, notifyGenerationComplete } from '../composables/completionNotifications'
 import * as api from '../api/yue2'
+import * as ownedApi from '../api/yueJobs'
 import type { CotMode, GenerateOptions } from '../api/yue2'
 import * as tracksApi from '../api/tracks'
-import { applyStatus, applyVoiceAndWait, getActiveVoiceId, voiceNameFor, VoiceApplyError, waitForVoiceApply } from '../api/voices'
+import { applyStatus, getActiveVoiceId, VoiceApplyError, waitForVoiceApply } from '../api/voices'
 import type { ApplyStatus } from '../api/voices'
-import { forgetVoiceClock, rememberVoiceClock, rememberVoiceUsed, voiceClock, voiceUsed } from './voiceClock'
+import { forgetVoiceClock, rememberVoiceUsed, voiceClock, voiceUsed } from './voiceClock'
 import { clearVoiceWatch, markVoiceWatch, noteVoice, voiceWatchActive } from './voiceWatch'
 import type { JobStatus } from '../types'
 import { i18n } from '../i18n'
 import { createPollingLoop, type PollContext, type PollingLoop } from '../composables/polling'
-import type { JsonObject, VoiceJobProgress } from '../api/contracts'
+import type { JsonObject, VoiceJobProgress, YueJobResponse, YueNativeProgress, YueGenerationSettings } from '../api/contracts'
 
 const t = i18n.global.t
 
 const HEALTH_MS = 5000
+const jobLoops = new WeakMap<object, PollingLoop>()
 const healthLoops = new WeakMap<object, PollingLoop>()
 type HistoryEdit = { kind: 'renamed'; title: string } | { kind: 'deleted' }
 // Only edits completed while this request is pending need reconciliation.
 // Keep them outside persisted/reactive state and discard them with the load.
-const pendingHistoryEdits = new WeakMap<object, Map<number, HistoryEdit>>()
+const pendingHistoryEdits = new WeakMap<object, Map<number | string, HistoryEdit>>()
 
 export interface Yue2Job {
   id: string
-  status: JobStatus
+  status: JobStatus | 'stopping'
+  backendOwned?: boolean
+  stage?: string
+  queueReason?: string
+  elapsedSeconds?: number
+  phaseEtaSeconds?: number | null
+  nativeProgress?: YueNativeProgress | null
+  nativeProgressAvailable?: boolean
   createdAt: number
   title: string
   style: string
@@ -30,6 +40,7 @@ export interface Yue2Job {
   cot: CotMode
   precision: 'q8_0' | 'q4_0'
   seed: number
+  errorCode?: string
   error?: string
   audioUrl?: string
   abcPlan?: string | null
@@ -57,11 +68,14 @@ export const useYue2Store = defineStore('yue2', {
     health: null as api.HealthResponse | null,
     healthError: false,
     historyLoaded: false,
+    historyError: '',
+    _backgroundActive: false,
+    _sessionGeneration: 0,
+    _ownedGeneration: 0,
     // Set by a TrackCard's "insert into form" action; GenerateForm watches
     // this and copies it into its own local ABC textarea state.
     pendingAbcInsert: null as string | null,
     pendingParamsInsert: null as JsonObject | null,
-    _aborters: {} as Record<string, AbortController>,
     _voiceAborters: {} as Record<number, AbortController>,
     _historyGeneration: 0,
   }),
@@ -75,10 +89,13 @@ export const useYue2Store = defineStore('yue2', {
     async loadHistory() {
       const generation = ++this._historyGeneration
       const isCurrent = () => generation === this._historyGeneration
-      const edits = new Map<number, HistoryEdit>()
+      const edits = new Map<number | string, HistoryEdit>()
       pendingHistoryEdits.set(this, edits)
       try {
-        const tracks = await tracksApi.listTracks('yue2')
+        const [tracks, owned] = await Promise.all([
+          tracksApi.listTracks('yue2'),
+          ownedApi.list().catch(() => { if (isCurrent()) this.historyError = t('generationWorkspace.failed'); return null }),
+        ])
         if (!isCurrent()) return
         const savedJobs: Yue2Job[] = await Promise.all(tracks.map(async (track) => {
           const voice = await this._savedVoice(track.id, track.audio_url, isCurrent)
@@ -113,16 +130,33 @@ export const useYue2Store = defineStore('yue2', {
           return job
         }))
         if (!isCurrent()) return
-        const currentSavedJobs = savedJobs.flatMap(job => {
+        if (owned) {
+          const reconciled = owned.flatMap(row => {
+            if (edits.get(row.id)?.kind === 'deleted') return []
+            const edit = row.track ? edits.get(row.track.id) : undefined
+            if (edit?.kind === 'deleted') return []
+            return [edit?.kind === 'renamed' && row.track ? { ...row, track: { ...row.track, title: edit.title } } : row]
+          })
+          this._mergeOwned(reconciled)
+          for (const saved of savedJobs) {
+            const live = this._trackJob(saved.dbId ?? -1)
+            if (!live?.backendOwned || !saved.voiceApply) continue
+            const { voiceApply, voicePhase, voiceId, voiceName, voiceStartedAt, voiceProgress, voiceError, voiceErrorCode } = saved
+            Object.assign(live, { voiceApply, voicePhase, voiceId, voiceName, voiceStartedAt, voiceProgress, voiceError, voiceErrorCode })
+          }
+        }
+        const ownedTrackIds = new Set(this.jobs.filter(job => job.backendOwned).flatMap(job => job.dbId == null ? [] : [job.dbId]))
+        const currentSavedJobs = savedJobs.filter(job => !ownedTrackIds.has(job.dbId ?? -1)).flatMap(job => {
           const edit = job.dbId == null ? undefined : edits.get(job.dbId)
           if (edit?.kind === 'deleted') return []
           return [edit?.kind === 'renamed' ? { ...job, title: edit.title } : job]
         })
         // Keep any jobs still in-flight this session (not yet in the saved list).
-        const inFlightIds = new Set(this.jobs.filter((j) => !j.finalized).map((j) => j.id))
+        const inFlightIds = new Set(this.jobs.filter((j) => !j.finalized || j.backendOwned).map((j) => j.id))
         this.jobs = [...this.jobs.filter((j) => inFlightIds.has(j.id)), ...currentSavedJobs].sort((a, b) => b.createdAt - a.createdAt)
         for (const job of this.jobs) {
           if (job.voiceApply === 'running') this._followVoice(job)
+          else if (job.voiceApply === 'done') void notifyGenerationComplete(`yue:${job.id}`, job.title)
         }
       } catch (cause) {
         if (isCurrent()) throw cause
@@ -148,6 +182,7 @@ export const useYue2Store = defineStore('yue2', {
           live.audioUrl = row.audio_url
         }
         live.voiceApply = 'done'
+        if (live.backendOwned && live.status === 'done') void notifyGenerationComplete(`yue:${live.id}`, live.title)
         live.voicePhase = ''
         if (row.voice_id) live.voiceId = row.voice_id
         if (row.voice_name) live.voiceName = row.voice_name
@@ -247,7 +282,59 @@ export const useYue2Store = defineStore('yue2', {
         if (!context || context.isCurrent()) this.healthError = true
       }
     },
+    _mergeOwned(rows: YueJobResponse[]) {
+      for (const row of rows) {
+        const track = row.track
+        const existing = this.jobs.find(job => job.id === row.id || track != null && job.dbId === track.id)
+        const mapped: Yue2Job = {
+          id: row.id, backendOwned: true, status: row.status,
+          createdAt: Date.parse(row.created_at), title: track?.title ?? row.title,
+          style: row.options.style, lyrics: row.lyrics, cot: row.options.cot, precision: row.precision,
+          seed: row.seed, stage: row.stage, queueReason: row.queue_reason, elapsedSeconds: row.elapsed_seconds,
+          phaseEtaSeconds: row.phase_eta_seconds, nativeProgress: row.progress, nativeProgressAvailable: row.native_progress_available,
+          finalized: row.status === 'done' || row.status === 'failed' || row.status === 'cancelled',
+          errorCode: row.error_code,
+          error: row.error_code ? t(`generationWorkspace.errors.${row.error_code}`) : undefined,
+          audioUrl: existing?.audioUrl ?? track?.audio_url, savedFilename: track?.filename,
+          dbId: track?.id, shortId: track?.short_id, durationSec: track?.duration_ms == null ? null : track.duration_ms / 1000,
+          wallSec: track?.wall_ms == null ? null : track.wall_ms / 1000, abcPlan: track?.abc_url ? '' : null,
+          params: track?.params ?? { ...row.options, lyrics: row.lyrics, precision: row.precision, seed: row.seed },
+          voiceId: row.voice_id ?? existing?.voiceId,
+        }
+        if (!mapped.finalized) rememberGenerationJob(`yue:${row.id}`)
+        if (row.status === 'done' && track && !row.voice_id) void notifyGenerationComplete(`yue:${row.id}`, mapped.title)
+        if (existing) Object.assign(existing, mapped)
+        else this.jobs.unshift(mapped)
+      }
+      this.jobs.sort((left, right) => right.createdAt - left.createdAt)
+    },
+    async pollOwnedJobs(context?: PollContext) {
+      const token = this._sessionGeneration
+      const ownership = this._ownedGeneration
+      const isCurrent = () => token === this._sessionGeneration && ownership === this._ownedGeneration && (!context || context.isCurrent())
+      try {
+        const rows = await ownedApi.list(context?.signal)
+        if (!isCurrent()) return
+        this._mergeOwned(rows)
+        this.historyError = ''
+        for (const row of rows) {
+          if (!isCurrent()) return
+          if (row.status !== 'done' || !row.track || !row.voice_id) continue
+          const voice = await this._savedVoice(row.track.id, row.track.audio_url, isCurrent)
+          if (!isCurrent()) return
+          const job = this._trackJob(row.track.id)
+          if (!job) continue
+          Object.assign(job, voice)
+          if (job.voiceApply === 'running') this._followVoice(job)
+          else if (job.voiceApply === 'done') void notifyGenerationComplete(`yue:${job.id}`, job.title)
+        }
+      } catch { if (isCurrent()) this.historyError = t('generationWorkspace.failed') }
+    },
     startBackgroundTasks() {
+      this._backgroundActive = true
+      let jobs = jobLoops.get(this)
+      if (!jobs) { jobs = createPollingLoop(context => this.pollOwnedJobs(context), 3000); jobLoops.set(this, jobs) }
+      jobs.start()
       let loop = healthLoops.get(this)
       if (!loop) {
         loop = createPollingLoop((context) => this.refreshHealth(context), HEALTH_MS)
@@ -256,6 +343,9 @@ export const useYue2Store = defineStore('yue2', {
       loop.start()
     },
     stopBackgroundTasks() {
+      this._backgroundActive = false
+      this._sessionGeneration++
+      jobLoops.get(this)?.stop()
       this._historyGeneration++
       pendingHistoryEdits.delete(this)
       healthLoops.get(this)?.stop()
@@ -265,131 +355,32 @@ export const useYue2Store = defineStore('yue2', {
         clearVoiceWatch(Number(trackId))
       }
     },
-    async generateBatch(params: { lyrics: string; style: string; cot: CotMode; precision: 'q8_0' | 'q4_0'; baseSeed: number; randomSeed: boolean; batchSize: number; options: GenerateOptions }) {
-      const newJobs: Yue2Job[] = []
-      for (let i = 0; i < params.batchSize; i++) {
-        const seed = params.randomSeed ? Math.floor(Math.random() * 2147483647) : params.baseSeed + i
-        newJobs.push({
-          id: `g_${Date.now()}_${i}`,
-          status: 'queued',
-          createdAt: Date.now(),
-          title: params.style,
-          style: params.style,
-          lyrics: params.lyrics,
-          cot: params.cot,
-          precision: params.precision,
-          seed,
-          finalized: false,
-          params: { ...params.options, cot: params.cot, precision: params.precision, style: params.style, lyrics: params.lyrics },
-        })
-      }
-      this.jobs.unshift(...newJobs)
-      for (const { id } of newJobs) {
-        // Look the job back up through the reactive `jobs` array instead of
-        // mutating the raw object still held in `newJobs`: Pinia/Vue only
-        // tracks changes made through the reactive proxy, so mutating the
-        // original (pre-unshift) reference never triggers a re-render even
-        // though the same data ends up saved to the server correctly.
-        const job = this.jobs.find((j) => j.id === id)
-        if (job && job.status === 'queued' && !job.finalized) await this._generateOne(job, params.options)
+    async generateBatch(params: { lyrics: string; style: string; cot: CotMode; precision: 'q8_0' | 'q4_0'; baseSeed: number; randomSeed: boolean; batchSize: number; options: GenerateOptions; settings?: YueGenerationSettings; voiceId?: string | null }) {
+      const token = this._sessionGeneration
+      const voiceId = params.voiceId === undefined ? getActiveVoiceId() : params.voiceId
+      const options = ownedApi.completeYueOptions(params.options)
+      if (!Number.isInteger(params.batchSize) || params.batchSize < 1 || params.batchSize > 4) throw new TypeError(t('generationWorkspace.invalid'))
+      for (let index = 0; index < params.batchSize; index++) {
+        if (token !== this._sessionGeneration) return
+        const seed = params.randomSeed ? Math.floor(Math.random() * 2147483647) : params.baseSeed + index
+        const row = await ownedApi.submit({ title: params.style.slice(0, 500), lyrics: params.lyrics,
+          seed, options, precision: params.precision, voice_id: voiceId, settings: params.settings ?? null })
+        if (token !== this._sessionGeneration) return
+        rememberGenerationJob(`yue:${row.id}`)
+        this._mergeOwned([row])
       }
     },
-    async _generateOne(job: Yue2Job, options: GenerateOptions) {
-      if (job.finalized || job.status === 'cancelled') return
-      job.status = 'running'
-      const aborter = new AbortController()
-      this._aborters[job.id] = aborter
-      try {
-        const started = performance.now()
-        const result = await api.generateTrack(job.lyrics, job.seed, options, job.precision, aborter.signal)
-        if (aborter.signal.aborted) return
-        const wallMs = result.timing?.wall_ms ?? performance.now() - started
-        const durationMs = result.timing?.audio_duration_ms
-        if (typeof result.audio !== 'string') throw new Error(t('storeErrors.serverNoAudio'))
-        const blob = api.base64AudioBlob(result.audio)
-        const abcPlan = api.abcFromResult(result)
-        job.audioUrl = URL.createObjectURL(blob)
-        job.wallSec = wallMs / 1000
-        job.durationSec = durationMs ? durationMs / 1000 : null
-        job.abcPlan = abcPlan || null
-        job.status = 'done'
-        job.finalized = true
-
-        try {
-          const saved = await tracksApi.saveTrack(
-            {
-              model: 'yue2',
-              title: job.title,
-              lyrics: job.lyrics,
-              seed: job.seed,
-              duration_ms: durationMs,
-              wall_ms: wallMs,
-              params: job.params || { cot: job.cot, precision: job.precision },
-            },
-            blob,
-            'wav',
-            abcPlan || null,
-          )
-          job.savedFilename = saved.filename
-          job.saveError = null
-          job.dbId = saved.id
-          job.shortId = saved.short_id ?? null
-          const voiceId = getActiveVoiceId()
-          if (voiceId) {
-            const voiceName = await voiceNameFor(voiceId)
-            const startedAt = Date.now()
-            rememberVoiceClock(saved.id, { startedAt, voiceId, voiceName })
-            const arm = this._trackJob(saved.id)
-            if (arm) {
-              arm.voiceApply = 'running'
-              arm.voiceError = ''
-              arm.voiceErrorCode = ''
-              arm.voiceId = voiceId
-              arm.voiceName = voiceName
-              arm.voiceStartedAt = startedAt
-              arm.voicePhase = ''
-            }
-            markVoiceWatch(saved.id)
-            try {
-              const voiced = await applyVoiceAndWait(voiceId, saved.id, (row) => {
-                this._onVoice(saved.id, row)
-              })
-              this._onVoice(saved.id, { status: 'done', audio_url: voiced, error: '', error_code: '', phase: '' })
-            } catch (voiceErr) {
-              this._onVoice(saved.id, {
-                status: 'failed',
-                audio_url: '',
-                error: voiceErr instanceof VoiceApplyError ? voiceErr.detail : (voiceErr instanceof Error ? voiceErr.message : String(voiceErr)),
-                error_code: voiceErr instanceof VoiceApplyError ? voiceErr.code : '',
-                phase: '',
-              })
-            } finally {
-              clearVoiceWatch(saved.id)
-            }
-          }
-        } catch (err) {
-          job.savedFilename = null
-          job.saveError = err instanceof Error ? err.message : String(err)
-          job.dbId = null
-        }
-      } catch (err) {
-        if (aborter.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
-          job.status = 'cancelled'
-        } else {
-          job.status = 'failed'
-          job.error = err instanceof Error ? err.message : String(err)
-        }
-        job.finalized = true
-      } finally {
-        delete this._aborters[job.id]
-      }
-    },
-    cancel(jobId: string) {
-      const job = this.jobs.find((row) => row.id === jobId)
-      if (!job || job.finalized) return
-      job.status = 'cancelled'
-      job.finalized = true
-      this._aborters[jobId]?.abort()
+    async cancel(jobId: string) {
+      const job = this.jobs.find(row => row.id === jobId)
+      if (!job || job.finalized && job.errorCode !== 'engine_recovery_required' || !job.backendOwned) return
+      this._ownedGeneration++
+      this._historyGeneration++
+      job.status = 'stopping'
+      job.finalized = false
+      const token = this._sessionGeneration
+      const row = await ownedApi.cancel(jobId)
+      if (token !== this._sessionGeneration) return
+      this._mergeOwned([row])
     },
     requestInsertAbc(abc: string) {
       this.pendingAbcInsert = abc
@@ -398,17 +389,26 @@ export const useYue2Store = defineStore('yue2', {
       this.pendingAbcInsert = null
     },
     async deleteJob(job: Yue2Job) {
+      if (!job.finalized) throw new Error(t('generationWorkspace.errors.engine_recovery_required'))
       const trackId = job.dbId
+      this._ownedGeneration++
       if (trackId != null) {
         await tracksApi.deleteTrack(trackId)
+        this._ownedGeneration++
         pendingHistoryEdits.get(this)?.set(trackId, { kind: 'deleted' })
+      }
+      if (trackId == null && job.backendOwned) {
+        await ownedApi.remove(job.id); this._ownedGeneration++
+        pendingHistoryEdits.get(this)?.set(job.id, { kind: 'deleted' })
       }
       this.jobs = this.jobs.filter((j) => j.id !== job.id && (trackId == null || j.dbId !== trackId))
     },
     async renameJob(job: Yue2Job, title: string) {
       const trackId = job.dbId
       if (trackId == null) return
+      this._ownedGeneration++
       const saved = await tracksApi.renameTrack(trackId, title)
+      this._ownedGeneration++
       const edits = pendingHistoryEdits.get(this)
       if (edits?.get(trackId)?.kind !== 'deleted') edits?.set(trackId, { kind: 'renamed', title: saved.title })
       const target = this._trackJob(trackId)

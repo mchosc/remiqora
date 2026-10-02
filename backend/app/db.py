@@ -176,8 +176,19 @@ def get_db() -> sqlite3.Connection:
             )
         """)
         _db.commit()
-        from .audio_version_store import migrate as migrate_audio_versions
-        migrate_audio_versions(_db)
+        try:
+            from .audio_version_store import migrate as migrate_audio_versions
+            migrate_audio_versions(_db)
+            from .generation_library import migrate as migrate_generation_library
+            migrate_generation_library(_db)
+            from .yue_jobs import migrate as migrate_yue_jobs
+            migrate_yue_jobs(_db)
+        except BaseException:
+            # Do not retain a partly initialized connection after a migration
+            # interruption. Additive migrations are safe to retry on next open.
+            _db.close()
+            _db = None
+            raise
     return _db
 
 
@@ -213,6 +224,7 @@ def insert_track(
     abc_path: Optional[Path],
     ace_candidate: tuple[str, int] | None = None,
     audio_version_id: str | None = None,
+    yue_job_id: str | None = None,
 ) -> int:
     db = get_db()
     db.execute("BEGIN IMMEDIATE")
@@ -242,11 +254,22 @@ def insert_track(
                 "INSERT INTO ace_candidates (task_id, candidate_index, track_id) VALUES (?, ?, ?)",
                 (*ace_candidate, cur.lastrowid),
             )
+        if yue_job_id is not None:
+            attached_yue = db.execute('UPDATE yue_jobs SET track_id=? WHERE id=? AND track_id IS NULL',
+                                      (cur.lastrowid, yue_job_id))
+            if attached_yue.rowcount != 1:
+                raise ValueError('invalid_yue_job_attachment')
         if audio_version_id is not None:
             attached = db.execute("UPDATE audio_versions SET worker_track_id=? WHERE id=? AND kind='voice' AND worker_track_id IS NULL",
                                   (cur.lastrowid, audio_version_id))
             if attached.rowcount != 1:
                 raise ValueError('invalid_audio_version_attachment')
+        elif model in ('ace_step', 'yue2'):
+            from .generation_library import capture_track
+            history_row = db.execute('SELECT * FROM tracks WHERE id=?', (cur.lastrowid,)).fetchone()
+            if history_row is None:
+                raise RuntimeError('Track insert could not be read for generation history')
+            capture_track(db, history_row)
         db.commit()
     except Exception:
         db.rollback()

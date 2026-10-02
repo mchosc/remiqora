@@ -1,6 +1,6 @@
 'use strict';
 // Copies what the installed app needs next to its executable: the backend sources, the built frontend and the
-// ACE-Step patch. Run by `npm run dist`. Never ships anything from a developer's machine (.env, database, venv).
+// engine patches. Run by `npm run dist`. Never ships anything from a developer's machine (.env, database, venv).
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -21,14 +21,14 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 
 // Top-level backend entries that are local state, not source.
-const LOCAL_ONLY = new Set(['.venv', '.env', 'data', 'logs', 'run.bat', 'run.sh']);
+const LOCAL_ONLY = new Set(['.venv', '.env', '.env.setup', 'data', 'logs', 'run.bat', 'run.sh']);
 const backendSrc = path.join(root, 'backend');
 fs.cpSync(backendSrc, path.join(out, 'backend'), {
   recursive: true,
   filter: (src) => {
     const rel = path.relative(backendSrc, src);
     if (!rel) return true;
-    if (LOCAL_ONLY.has(rel.split(path.sep)[0])) return false;
+    if (LOCAL_ONLY.has(rel.split(path.sep)[0]) || rel.split(path.sep)[0].startsWith('.env.setup.')) return false;
     return !rel.split(path.sep).includes('__pycache__') && !rel.endsWith('.pyc');
   },
 });
@@ -39,6 +39,15 @@ fs.cpSync(dist, path.join(out, 'frontend', 'dist'), { recursive: true });
 
 fs.mkdirSync(path.join(out, 'patches'), { recursive: true });
 fs.copyFileSync(path.join(root, 'external', 'patches', 'ace-step.patch'), path.join(out, 'patches', 'ace-step.patch'));
+fs.copyFileSync(path.join(root, 'external', 'patches', 'yue-model-resume.patch'), path.join(out, 'patches', 'yue-model-resume.patch'));
+
+// The optional native build verifier resolves these relative to backend/scripts,
+// so installed resources retain the source checkout's external/patches layout.
+const nativePatches = path.join(out, 'external', 'patches');
+fs.mkdirSync(nativePatches, { recursive: true });
+for (const name of ['yue-workspace-release.patch', 'yue-progress.patch', 'README.md']) {
+  fs.copyFileSync(path.join(root, 'external', 'patches', name), path.join(nativePatches, name));
+}
 
 // Guard: fail the build rather than ship personal data.
 const forbidden = [];

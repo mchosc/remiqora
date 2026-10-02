@@ -4,16 +4,17 @@ import { useI18n } from 'vue-i18n'
 import { useOrchestratorStore } from './stores/orchestrator'
 import AppHeader from './components/shared/AppHeader.vue'
 import AppFooter from './components/shared/AppFooter.vue'
+import { completionNotifications, startCompletionPreferenceSync, stopCompletionPreferenceSync } from './composables/completionNotifications'
 
 const orchestrator = useOrchestratorStore()
 const { t } = useI18n()
 
 watchEffect(() => {
-  document.title = `Remiqora — ${t('header.tagline')}`
+  document.title = `${completionNotifications.unread.length ? `(${completionNotifications.unread.length}) ` : ''}Remiqora — ${t('header.tagline')}`
 })
 
-onMounted(() => orchestrator.startPolling())
-onBeforeUnmount(() => orchestrator.stopPolling())
+onMounted(() => { startCompletionPreferenceSync(); orchestrator.startPolling() })
+onBeforeUnmount(() => { stopCompletionPreferenceSync(); orchestrator.stopPolling() })
 </script>
 
 <template>
